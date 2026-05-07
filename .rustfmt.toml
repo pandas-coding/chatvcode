@@ -1,0 +1,29 @@
+style_edition = "2024"
+# Make Rust more readable given most people have wide screens nowadays.
+use_small_heuristics = "Max"
+
+# Basic settings
+edition = "2024"
+tab_spaces = 4
+newline_style = "Auto"
+
+# Import sorting and merging
+reorder_imports = true
+reorder_modules = true
+
+# Advanced settings (requires unstable_features = true)
+unstable_features = true
+
+# Import granularity: merge imports from the same crate into one block
+imports_granularity = "Crate"
+
+# Remove redundant items in nested parentheses
+remove_nested_parens = true
+
+# Merge derives
+merge_derives = true
+
+# Chain call indentation
+chain_width = 60
+
+use_field_init_shorthand = true

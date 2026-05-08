@@ -2,6 +2,7 @@ use atlas_core::{AtlasError, AtlasResult, ErrorContext, FileLanguage, ParseResul
 use tree_sitter::Tree;
 
 use crate::ParserService;
+use crate::chunk::extract_chunks;
 
 pub fn parse_source(source_file: SourceFile) -> AtlasResult<ParseResult> {
     if !source_file.language.is_supported() {
@@ -19,7 +20,10 @@ pub fn parse_source(source_file: SourceFile) -> AtlasResult<ParseResult> {
 
     let errors = collect_parse_errors(&tree, &source_file);
 
-    Ok(ParseResult::success(source_file, Vec::new()).with_errors(errors))
+    let root = tree.root_node();
+    let chunks = extract_chunks(&root, &source_file);
+
+    Ok(ParseResult::success(source_file, chunks).with_errors(errors))
 }
 
 fn collect_parse_errors(tree: &Tree, source_file: &SourceFile) -> Vec<AtlasError> {

@@ -22,9 +22,7 @@ pub struct ParserService {
 
 impl ParserService {
     pub fn new() -> Self {
-        Self {
-            parser: Parser::new(),
-        }
+        Self { parser: Parser::new() }
     }
 
     pub fn parse(&mut self, source_file: &SourceFile) -> AtlasResult<Tree> {

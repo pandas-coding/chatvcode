@@ -16,10 +16,7 @@ pub struct ScanOptions {
 
 impl ScanOptions {
     pub fn new(root: impl Into<PathBuf>) -> Self {
-        Self {
-            root: root.into(),
-            max_depth: None,
-        }
+        Self { root: root.into(), max_depth: None }
     }
 
     pub fn with_max_depth(mut self, depth: usize) -> Self {
@@ -41,11 +38,7 @@ pub struct ScanResult {
 
 impl ScanResult {
     pub fn new() -> Self {
-        Self {
-            source_files: Vec::new(),
-            skipped_files: Vec::new(),
-            errors: Vec::new(),
-        }
+        Self { source_files: Vec::new(), skipped_files: Vec::new(), errors: Vec::new() }
     }
 }
 
@@ -74,12 +67,10 @@ impl Scanner {
         let mut result = ScanResult::new();
 
         if !options.root.exists() {
-            result.errors.push(
-                AtlasError::io(format!(
-                    "Root path does not exist: {}",
-                    options.root.display()
-                ))
-            );
+            result.errors.push(AtlasError::io(format!(
+                "Root path does not exist: {}",
+                options.root.display()
+            )));
             return result;
         }
 
@@ -116,12 +107,10 @@ impl Scanner {
         let entries = match fs::read_dir(dir) {
             Ok(entries) => entries,
             Err(e) => {
-                result.errors.push(
-                    AtlasError::io(format!(
-                        "Failed to read directory {}: {e}",
-                        dir.display()
-                    ))
-                );
+                result.errors.push(AtlasError::io(format!(
+                    "Failed to read directory {}: {e}",
+                    dir.display()
+                )));
                 return;
             }
         };
@@ -130,12 +119,10 @@ impl Scanner {
             let entry = match entry {
                 Ok(entry) => entry,
                 Err(e) => {
-                    result.errors.push(
-                        AtlasError::io(format!(
-                            "Failed to read entry in {}: {e}",
-                            dir.display()
-                        ))
-                    );
+                    result.errors.push(AtlasError::io(format!(
+                        "Failed to read entry in {}: {e}",
+                        dir.display()
+                    )));
                     continue;
                 }
             };
@@ -144,12 +131,10 @@ impl Scanner {
             let file_type = match entry.file_type() {
                 Ok(ft) => ft,
                 Err(e) => {
-                    result.errors.push(
-                        AtlasError::io(format!(
-                            "Failed to get file type for {}: {e}",
-                            path.display()
-                        ))
-                    );
+                    result.errors.push(AtlasError::io(format!(
+                        "Failed to get file type for {}: {e}",
+                        path.display()
+                    )));
                     continue;
                 }
             };
@@ -199,7 +184,8 @@ impl Scanner {
     pub fn normalize_path(path: &Path) -> PathBuf {
         // Try to canonicalize the path, but fall back to manual cleanup if it fails
         // (e.g., during testing or for paths that don't exist yet)
-        path.canonicalize().unwrap_or_else(|_| Self::clean_path(path))
+        path.canonicalize()
+            .unwrap_or_else(|_| Self::clean_path(path))
     }
 
     /// Cleans a path by resolving `.` and `..` components without requiring
@@ -245,10 +231,7 @@ impl Scanner {
             .into_iter()
             .map(|path| {
                 let source_text = fs::read_to_string(&path).map_err(|e| {
-                    AtlasError::io(format!(
-                        "Failed to read file {}: {e}",
-                        path.display()
-                    ))
+                    AtlasError::io(format!("Failed to read file {}: {e}", path.display()))
                 })?;
                 Ok(SourceFile::new(path, source_text))
             })
@@ -354,14 +337,8 @@ mod tests {
         let normalized = Scanner::normalize_path(path);
         let normalized_str = normalized.to_string_lossy();
         // The normalized path should be cleaned up (no `..` components)
-        assert!(
-            !normalized_str.contains("/../"),
-            "path still contains /../: {normalized_str}"
-        );
-        assert!(
-            !normalized_str.ends_with(".."),
-            "path ends with '..': {normalized_str}"
-        );
+        assert!(!normalized_str.contains("/../"), "path still contains /../: {normalized_str}");
+        assert!(!normalized_str.ends_with(".."), "path ends with '..': {normalized_str}");
     }
 
     #[test]

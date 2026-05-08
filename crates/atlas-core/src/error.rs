@@ -43,11 +43,7 @@ pub struct AtlasError {
 
 impl AtlasError {
     pub fn new(kind: ErrorKind, message: impl Into<String>) -> Self {
-        Self {
-            kind,
-            message: message.into(),
-            context: ErrorContext::default(),
-        }
+        Self { kind, message: message.into(), context: ErrorContext::default() }
     }
 
     pub fn with_context(mut self, context: ErrorContext) -> Self {

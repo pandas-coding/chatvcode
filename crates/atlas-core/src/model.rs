@@ -64,11 +64,7 @@ impl SourceFile {
         let path = path.into();
         let language = FileLanguage::from_path(&path);
 
-        Self {
-            path,
-            language,
-            source_text: source_text.into(),
-        }
+        Self { path, language, source_text: source_text.into() }
     }
 }
 
@@ -82,12 +78,7 @@ pub struct ChunkSpan {
 
 impl ChunkSpan {
     pub fn new(start_byte: usize, end_byte: usize, start_line: usize, end_line: usize) -> Self {
-        Self {
-            start_byte,
-            end_byte,
-            start_line,
-            end_line,
-        }
+        Self { start_byte, end_byte, start_line, end_line }
     }
 }
 
@@ -147,11 +138,7 @@ pub struct ParseResult {
 
 impl ParseResult {
     pub fn success(file: SourceFile, chunks: Vec<CodeChunk>) -> Self {
-        Self {
-            file,
-            chunks,
-            errors: Vec::new(),
-        }
+        Self { file, chunks, errors: Vec::new() }
     }
 
     pub fn with_errors(mut self, errors: Vec<crate::error::AtlasError>) -> Self {

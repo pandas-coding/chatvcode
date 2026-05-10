@@ -140,4 +140,120 @@ mod tests {
         assert!(!should_ignore_file(Path::new("app.tsx")));
         assert!(!should_ignore_file(Path::new("lib.rs")));
     }
+
+    #[test]
+    fn test_should_ignore_svn_dir() {
+        assert!(should_ignore_dir(Path::new("/project/.svn")));
+        assert!(should_ignore_dir(Path::new(".svn")));
+    }
+
+    #[test]
+    fn test_should_ignore_hg_dir() {
+        assert!(should_ignore_dir(Path::new("/project/.hg")));
+        assert!(should_ignore_dir(Path::new(".hg")));
+    }
+
+    #[test]
+    fn test_should_ignore_dist_dir() {
+        assert!(should_ignore_dir(Path::new("dist")));
+        assert!(should_ignore_dir(Path::new("/project/dist")));
+    }
+
+    #[test]
+    fn test_should_ignore_build_dir() {
+        assert!(should_ignore_dir(Path::new("build")));
+        assert!(should_ignore_dir(Path::new("/project/build")));
+    }
+
+    #[test]
+    fn test_should_ignore_pycache_dir() {
+        assert!(should_ignore_dir(Path::new("__pycache__")));
+        assert!(should_ignore_dir(Path::new("/project/__pycache__")));
+    }
+
+    #[test]
+    fn test_should_ignore_venv_dirs() {
+        assert!(should_ignore_dir(Path::new(".venv")));
+        assert!(should_ignore_dir(Path::new("venv")));
+    }
+
+    #[test]
+    fn test_should_ignore_next_dirs() {
+        assert!(should_ignore_dir(Path::new(".next")));
+        assert!(should_ignore_dir(Path::new(".nuxt")));
+    }
+
+    #[test]
+    fn test_should_ignore_audio_video_files() {
+        assert!(should_ignore_file(Path::new("audio.mp3")));
+        assert!(should_ignore_file(Path::new("video.mp4")));
+        assert!(should_ignore_file(Path::new("sound.wav")));
+    }
+
+    #[test]
+    fn test_should_ignore_document_files() {
+        assert!(should_ignore_file(Path::new("doc.pdf")));
+        assert!(should_ignore_file(Path::new("sheet.xlsx")));
+        assert!(should_ignore_file(Path::new("presentation.pptx")));
+    }
+
+    #[test]
+    fn test_should_ignore_archive_files() {
+        assert!(should_ignore_file(Path::new("archive.zip")));
+        assert!(should_ignore_file(Path::new("backup.tar")));
+        assert!(should_ignore_file(Path::new("data.gz")));
+        assert!(should_ignore_file(Path::new("pack.7z")));
+    }
+
+    #[test]
+    fn test_should_ignore_compiled_files() {
+        assert!(should_ignore_file(Path::new("module.pyc")));
+        assert!(should_ignore_file(Path::new("Main.class")));
+    }
+
+    #[test]
+    fn test_should_ignore_ds_store() {
+        assert!(should_ignore_file(Path::new(".DS_Store")));
+    }
+
+    #[test]
+    fn test_should_ignore_thumbs_db() {
+        assert!(should_ignore_file(Path::new("Thumbs.db")));
+    }
+
+    #[test]
+    fn test_should_ignore_pnpm_lock() {
+        assert!(should_ignore_file(Path::new("pnpm-lock.yaml")));
+    }
+
+    #[test]
+    fn test_should_not_ignore_ts_files() {
+        assert!(!should_ignore_file(Path::new("app.ts")));
+        assert!(!should_ignore_file(Path::new("component.tsx")));
+    }
+
+    #[test]
+    fn test_should_not_ignore_rust_files() {
+        assert!(!should_ignore_file(Path::new("main.rs")));
+        assert!(!should_ignore_file(Path::new("lib.rs")));
+    }
+
+    #[test]
+    fn test_should_not_ignore_js_files() {
+        assert!(!should_ignore_file(Path::new("index.js")));
+        assert!(!should_ignore_file(Path::new("component.jsx")));
+    }
+
+    #[test]
+    fn test_should_ignore_file_with_no_name() {
+        let path = Path::new("");
+        assert!(should_ignore_file(path));
+    }
+
+    #[test]
+    fn test_should_ignore_binary_extensions_case_insensitive() {
+        assert!(should_ignore_file(Path::new("program.EXE")));
+        assert!(should_ignore_file(Path::new("image.PNG")));
+        assert!(should_ignore_file(Path::new("archive.ZIP")));
+    }
 }

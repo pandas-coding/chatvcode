@@ -3,6 +3,9 @@ name = "atlas-parser"
 version = "0.1.0"
 edition = "2024"
 
+[dev-dependencies]
+tempfile = "3"
+
 [dependencies]
 atlas-core = { path = "../atlas-core" }
 tree-sitter = { workspace = true }

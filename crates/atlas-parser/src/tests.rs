@@ -365,3 +365,208 @@ fn tsx_function_chunk_extraction() {
     assert!(fn_chunk.is_some());
     assert_eq!(fn_chunk.unwrap().symbol_name.as_deref(), Some("App"));
 }
+
+#[test]
+fn rust_parser_produces_valid_ast() {
+    let mut service = ParserService::new();
+    let file = SourceFile::new("test.rs", "fn main() {}");
+    let tree = service.parse(&file).expect("should parse");
+
+    let root = tree.root_node();
+    assert!(!root.has_error());
+    assert_eq!(root.child_count(), 1);
+
+    let func = root.child(0).unwrap();
+    assert_eq!(func.kind(), "function_item");
+}
+
+#[test]
+fn js_parser_produces_valid_ast() {
+    let mut service = ParserService::new();
+    let file = SourceFile::new("test.js", "function hello() {}");
+    let tree = service.parse(&file).expect("should parse");
+
+    let root = tree.root_node();
+    assert!(!root.has_error());
+}
+
+#[test]
+fn ts_parser_produces_valid_ast() {
+    let mut service = ParserService::new();
+    let file = SourceFile::new("test.ts", "function hello(): void {}");
+    let tree = service.parse(&file).expect("should parse");
+
+    let root = tree.root_node();
+    assert!(!root.has_error());
+}
+
+#[test]
+fn unsupported_language_error_includes_context() {
+    let file = SourceFile {
+        path: PathBuf::from("data.csv"),
+        language: FileLanguage::Unknown,
+        source_text: "a,b,c".to_string(),
+    };
+
+    let error = parse_source(file).expect_err("should fail");
+    assert_eq!(error.kind, ErrorKind::UnsupportedLanguage);
+    assert!(error.context.path.is_some());
+    assert!(error.context.language.is_some());
+}
+
+#[test]
+fn parser_for_language_supported() {
+    assert!(parser_for_language(FileLanguage::Rust).is_ok());
+    assert!(parser_for_language(FileLanguage::JavaScript).is_ok());
+    assert!(parser_for_language(FileLanguage::TypeScript).is_ok());
+    assert!(parser_for_language(FileLanguage::Tsx).is_ok());
+    assert!(parser_for_language(FileLanguage::Jsx).is_ok());
+}
+
+#[test]
+fn parser_for_language_unsupported() {
+    let result = parser_for_language(FileLanguage::Unknown);
+    assert!(result.is_err());
+    assert_eq!(result.err().unwrap().kind, ErrorKind::UnsupportedLanguage);
+}
+
+#[test]
+fn rust_chunk_file_path_preserved() {
+    let file = SourceFile::new("src/main.rs", "fn main() {}");
+    let result = parse_source(file).expect("should parse");
+
+    assert_eq!(result.chunks[0].file_path, PathBuf::from("src/main.rs"));
+}
+
+#[test]
+fn rust_chunk_language_preserved() {
+    let file = SourceFile::new("lib.rs", "fn main() {}");
+    let result = parse_source(file).expect("should parse");
+
+    assert_eq!(result.chunks[0].language, FileLanguage::Rust);
+}
+
+#[test]
+fn js_chunk_language_preserved() {
+    let file = SourceFile::new("app.js", "function hello() {}");
+    let result = parse_source(file).expect("should parse");
+
+    assert_eq!(result.chunks[0].language, FileLanguage::JavaScript);
+}
+
+#[test]
+fn tsx_chunk_language_preserved() {
+    let file = SourceFile::new("app.tsx", "function App() { return <div />; }");
+    let result = parse_source(file).expect("should parse");
+
+    assert_eq!(result.chunks[0].language, FileLanguage::Tsx);
+}
+
+#[test]
+fn js_generator_function_chunk() {
+    let code = "function* gen() { yield 1; }";
+    let file = SourceFile::new("test.js", code);
+    let result = parse_source(file).expect("should parse");
+
+    let fn_chunk = result.chunks.iter().find(|c| c.kind == ChunkKind::Function);
+    assert!(fn_chunk.is_some());
+    assert_eq!(fn_chunk.unwrap().symbol_name.as_deref(), Some("gen"));
+}
+
+#[test]
+fn js_export_function_chunk() {
+    let code = "export function hello() { return 42; }";
+    let file = SourceFile::new("test.js", code);
+    let result = parse_source(file).expect("should parse");
+
+    let export_chunk = result.chunks.iter().find(|c| c.kind == ChunkKind::Module);
+    assert!(export_chunk.is_some());
+}
+
+#[test]
+fn rust_multiline_struct_span() {
+    let code = "struct Point {\n    x: f64,\n    y: f64,\n}";
+    let file = SourceFile::new("test.rs", code);
+    let result = parse_source(file).expect("should parse");
+
+    let chunk = result.chunks.iter().find(|c| c.kind == ChunkKind::Struct).unwrap();
+    assert_eq!(chunk.span.start_line, 0);
+    assert_eq!(chunk.span.end_line, 3);
+}
+
+#[test]
+fn rust_multiple_functions() {
+    let code = "fn foo() {}\nfn bar() {}\nfn baz() {}";
+    let file = SourceFile::new("test.rs", code);
+    let result = parse_source(file).expect("should parse");
+
+    assert_eq!(result.chunks.len(), 3);
+    let names: Vec<_> = result.chunks.iter().filter_map(|c| c.symbol_name.as_deref()).collect();
+    assert!(names.contains(&"foo"));
+    assert!(names.contains(&"bar"));
+    assert!(names.contains(&"baz"));
+}
+
+#[test]
+fn js_const_with_arrow_no_chunk() {
+    let code = "const add = (a, b) => a + b;";
+    let file = SourceFile::new("test.js", code);
+    let result = parse_source(file).expect("should parse");
+
+    let const_chunks: Vec<_> = result.chunks.iter().filter(|c| c.kind == ChunkKind::Constant).collect();
+    assert!(!const_chunks.is_empty());
+}
+
+#[test]
+fn ts_class_with_methods() {
+    let code = "class Service {\n    constructor() {}\n    async fetch() {}\n}";
+    let file = SourceFile::new("test.ts", code);
+    let result = parse_source(file).expect("should parse");
+
+    let class_chunk = result.chunks.iter().find(|c| c.kind == ChunkKind::Class);
+    assert!(class_chunk.is_some());
+    assert_eq!(class_chunk.unwrap().symbol_name.as_deref(), Some("Service"));
+}
+
+#[test]
+fn jsx_class_chunk() {
+    let code = "class Component extends React.Component { render() { return <div />; } }";
+    let file = SourceFile::new("test.jsx", code);
+    let result = parse_source(file).expect("should parse");
+
+    let class_chunk = result.chunks.iter().find(|c| c.kind == ChunkKind::Class);
+    assert!(class_chunk.is_some());
+    assert_eq!(class_chunk.unwrap().symbol_name.as_deref(), Some("Component"));
+}
+
+#[test]
+fn rust_impl_with_trait() {
+    let code = "impl Display for Point {\n    fn fmt(&self, f: &mut Formatter) -> Result {}\n}";
+    let file = SourceFile::new("test.rs", code);
+    let result = parse_source(file).expect("should parse");
+
+    let impl_chunk = result.chunks.iter().find(|c| c.kind == ChunkKind::Impl);
+    assert!(impl_chunk.is_some());
+}
+
+#[test]
+fn invalid_js_syntax_reports_errors() {
+    let file = SourceFile::new("bad.js", "function function function");
+    let result = parse_source(file).expect("should still return result");
+
+    assert!(!result.errors.is_empty(), "invalid JS syntax should report errors");
+}
+
+#[test]
+fn chunk_byte_span_matches_source_text_length() {
+    let code = "fn hello() {}";
+    let file = SourceFile::new("test.rs", code);
+    let result = parse_source(file).expect("should parse");
+
+    for chunk in &result.chunks {
+        assert_eq!(
+            chunk.source_text.len(),
+            chunk.span.end_byte - chunk.span.start_byte
+        );
+    }
+}

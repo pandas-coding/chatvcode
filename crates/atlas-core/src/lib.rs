@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::time::Instant;
 
 use rayon::prelude::*;
 
@@ -28,6 +29,7 @@ where
 
 pub fn index_path(path: impl Into<PathBuf>, parser: &dyn ParseSource) -> AtlasResult<IndexResult> {
     let path = path.into();
+    let start = Instant::now();
 
     if !path.exists() {
         let err = AtlasError::invalid_input(format!(
@@ -90,12 +92,16 @@ pub fn index_path(path: impl Into<PathBuf>, parser: &dyn ParseSource) -> AtlasRe
         }
     }
 
-    let index_result = IndexResult::from_parse_results(parse_results, scan_errors);
+    let mut index_result = IndexResult::from_parse_results(parse_results, scan_errors);
+    let elapsed = start.elapsed();
+    index_result.set_elapsed_ms(elapsed.as_millis() as u64);
+
     log::info!(
-        "Index complete: {} files parsed, {} chunks, {} errors",
+        "Index complete: {} files parsed, {} chunks, {} errors in {}ms",
         index_result.stats.parsed_files,
         index_result.stats.total_chunks,
-        index_result.stats.total_errors
+        index_result.stats.total_errors,
+        index_result.stats.elapsed_ms
     );
 
     Ok(index_result)
@@ -124,6 +130,7 @@ mod tests {
 
     fn mock_parser(source_file: SourceFile) -> AtlasResult<ParseResult> {
         let chunk = CodeChunk {
+            id: CodeChunk::generate_id(&source_file.path, ChunkKind::Function, Some("mock"), 0),
             file_path: source_file.path.clone(),
             language: source_file.language,
             kind: ChunkKind::Function,
@@ -213,7 +220,15 @@ mod tests {
         let result1 = index_path(root, &mock_parser).unwrap();
         let result2 = index_path(root, &mock_parser).unwrap();
 
-        assert_eq!(result1.stats, result2.stats);
+        assert_eq!(result1.stats.total_files, result2.stats.total_files);
+        assert_eq!(result1.stats.parsed_files, result2.stats.parsed_files);
+        assert_eq!(result1.stats.skipped_files, result2.stats.skipped_files);
+        assert_eq!(result1.stats.total_chunks, result2.stats.total_chunks);
+        assert_eq!(result1.stats.total_errors, result2.stats.total_errors);
+        assert_eq!(result1.stats.files_by_language, result2.stats.files_by_language);
+        assert_eq!(result1.stats.chunks_by_language, result2.stats.chunks_by_language);
+        assert_eq!(result1.stats.chunks_by_kind, result2.stats.chunks_by_kind);
+        assert_eq!(result1.stats.total_source_bytes, result2.stats.total_source_bytes);
     }
 
     #[test]
@@ -230,6 +245,7 @@ mod tests {
                 Err(AtlasError::parse("selective failure"))
             } else {
                 let chunk = CodeChunk {
+                    id: CodeChunk::generate_id(&source_file.path, ChunkKind::Function, Some("good"), 0),
                     file_path: source_file.path.clone(),
                     language: source_file.language,
                     kind: ChunkKind::Function,

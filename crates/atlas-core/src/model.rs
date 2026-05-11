@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
 
@@ -125,12 +126,21 @@ impl fmt::Display for ChunkKind {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CodeChunk {
+    pub id: String,
     pub file_path: PathBuf,
     pub language: FileLanguage,
     pub kind: ChunkKind,
     pub symbol_name: Option<String>,
     pub span: ChunkSpan,
     pub source_text: String,
+}
+
+impl CodeChunk {
+    pub fn generate_id(file_path: &Path, kind: ChunkKind, symbol_name: Option<&str>, start_line: usize) -> String {
+        let file_str = file_path.to_string_lossy();
+        let symbol = symbol_name.unwrap_or("_");
+        format!("{}:{}:{}:{}", file_str, kind, symbol, start_line)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -158,6 +168,11 @@ pub struct IndexStats {
     pub skipped_files: usize,
     pub total_chunks: usize,
     pub total_errors: usize,
+    pub files_by_language: HashMap<FileLanguage, usize>,
+    pub chunks_by_language: HashMap<FileLanguage, usize>,
+    pub chunks_by_kind: HashMap<ChunkKind, usize>,
+    pub total_source_bytes: usize,
+    pub elapsed_ms: u64,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -179,6 +194,22 @@ impl IndexResult {
         let total_errors = errors.len() + file_errors;
         let total_files = parsed_files + errors.len();
 
+        let mut files_by_language: HashMap<FileLanguage, usize> = HashMap::new();
+        let mut chunks_by_language: HashMap<FileLanguage, usize> = HashMap::new();
+        let mut chunks_by_kind: HashMap<ChunkKind, usize> = HashMap::new();
+        let mut total_source_bytes = 0;
+
+        for file in &files {
+            let lang = file.file.language;
+            *files_by_language.entry(lang).or_insert(0) += 1;
+            total_source_bytes += file.file.source_text.len();
+
+            for chunk in &file.chunks {
+                *chunks_by_language.entry(chunk.language).or_insert(0) += 1;
+                *chunks_by_kind.entry(chunk.kind).or_insert(0) += 1;
+            }
+        }
+
         Self {
             stats: IndexStats {
                 total_files,
@@ -186,10 +217,19 @@ impl IndexResult {
                 skipped_files: total_files.saturating_sub(parsed_files),
                 total_chunks,
                 total_errors,
+                files_by_language,
+                chunks_by_language,
+                chunks_by_kind,
+                total_source_bytes,
+                elapsed_ms: 0,
             },
             files,
             errors,
         }
+    }
+
+    pub fn set_elapsed_ms(&mut self, ms: u64) {
+        self.stats.elapsed_ms = ms;
     }
 }
 
@@ -346,6 +386,7 @@ mod tests {
     fn index_result_from_parse_results_counts() {
         let file1 = SourceFile::new("a.rs", "fn a() {}");
         let chunk1 = CodeChunk {
+            id: CodeChunk::generate_id(Path::new("a.rs"), ChunkKind::Function, Some("a"), 0),
             file_path: PathBuf::from("a.rs"),
             language: FileLanguage::Rust,
             kind: ChunkKind::Function,
@@ -357,6 +398,7 @@ mod tests {
 
         let file2 = SourceFile::new("b.rs", "fn b() {}");
         let chunk2 = CodeChunk {
+            id: CodeChunk::generate_id(Path::new("b.rs"), ChunkKind::Function, Some("b"), 0),
             file_path: PathBuf::from("b.rs"),
             language: FileLanguage::Rust,
             kind: ChunkKind::Function,
@@ -371,5 +413,7 @@ mod tests {
         assert_eq!(result.stats.parsed_files, 2);
         assert_eq!(result.stats.total_chunks, 2);
         assert_eq!(result.stats.total_errors, 0);
+        assert_eq!(result.stats.files_by_language.get(&FileLanguage::Rust), Some(&2));
+        assert_eq!(result.stats.chunks_by_kind.get(&ChunkKind::Function), Some(&2));
     }
 }

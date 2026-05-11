@@ -118,7 +118,15 @@ fn build_chunk_from_node(
         return None;
     }
 
+    let id = CodeChunk::generate_id(
+        &source_file.path,
+        def.kind,
+        symbol_name.as_deref(),
+        span.start_line,
+    );
+
     Some(CodeChunk {
+        id,
         file_path: source_file.path.clone(),
         language: source_file.language,
         kind: def.kind,

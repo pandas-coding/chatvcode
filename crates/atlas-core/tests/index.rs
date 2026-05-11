@@ -345,5 +345,13 @@ fn index_parallel_consistency_with_many_files() {
     let r1 = index_path(root, &parse_source).unwrap();
     let r2 = index_path(root, &parse_source).unwrap();
 
-    assert_eq!(r1.stats, r2.stats);
+    assert_eq!(r1.stats.total_files, r2.stats.total_files);
+    assert_eq!(r1.stats.parsed_files, r2.stats.parsed_files);
+    assert_eq!(r1.stats.skipped_files, r2.stats.skipped_files);
+    assert_eq!(r1.stats.total_chunks, r2.stats.total_chunks);
+    assert_eq!(r1.stats.total_errors, r2.stats.total_errors);
+    assert_eq!(r1.stats.files_by_language, r2.stats.files_by_language);
+    assert_eq!(r1.stats.chunks_by_language, r2.stats.chunks_by_language);
+    assert_eq!(r1.stats.chunks_by_kind, r2.stats.chunks_by_kind);
+    assert_eq!(r1.stats.total_source_bytes, r2.stats.total_source_bytes);
 }

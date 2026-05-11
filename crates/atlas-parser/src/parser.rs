@@ -20,6 +20,12 @@ pub struct ParserService {
     parser: Parser,
 }
 
+impl std::fmt::Debug for ParserService {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ParserService").finish_non_exhaustive()
+    }
+}
+
 impl ParserService {
     pub fn new() -> Self {
         Self { parser: Parser::new() }
@@ -27,7 +33,7 @@ impl ParserService {
 
     pub fn parse(&mut self, source_file: &SourceFile) -> AtlasResult<Tree> {
         let lang = language_for(source_file.language).ok_or_else(|| {
-            AtlasError::unsupported_language(format!(
+            let err = AtlasError::unsupported_language(format!(
                 "no tree-sitter grammar for {}",
                 source_file.language
             ))
@@ -36,17 +42,30 @@ impl ParserService {
                     .with_operation("parse")
                     .with_path(source_file.path.clone())
                     .with_language(source_file.language),
-            )
+            );
+            log::error!("{}", err);
+            err
         })?;
 
         self.parser
             .set_language(&lang)
-            .map_err(|e| AtlasError::internal(e.to_string()))?;
+            .map_err(|e| {
+                let err = AtlasError::internal(e.to_string())
+                    .with_context(
+                        ErrorContext::default()
+                            .with_operation("parse")
+                            .with_path(source_file.path.clone())
+                            .with_language(source_file.language),
+                    )
+                    .with_source(e.to_string());
+                log::error!("{}", err);
+                err
+            })?;
 
         self.parser
             .parse(&source_file.source_text, None)
             .ok_or_else(|| {
-                AtlasError::parse(format!(
+                let err = AtlasError::parse(format!(
                     "tree-sitter returned no tree for {}",
                     source_file.path.display()
                 ))
@@ -55,7 +74,9 @@ impl ParserService {
                         .with_operation("parse")
                         .with_path(source_file.path.clone())
                         .with_language(source_file.language),
-                )
+                );
+                log::error!("{}", err);
+                err
             })
     }
 }

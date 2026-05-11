@@ -3,7 +3,7 @@ use std::path::{Component, Path, PathBuf};
 
 use rayon::prelude::*;
 
-use crate::error::{AtlasError, AtlasResult};
+use crate::error::{AtlasError, AtlasResult, ErrorContext};
 use crate::ignore;
 use crate::model::{FileLanguage, SourceFile};
 
@@ -69,12 +69,21 @@ impl Scanner {
         let mut result = ScanResult::new();
 
         if !options.root.exists() {
-            result.errors.push(AtlasError::io(format!(
+            let err = AtlasError::io(format!(
                 "Root path does not exist: {}",
                 options.root.display()
-            )));
+            ))
+            .with_context(
+                ErrorContext::default()
+                    .with_operation("scan")
+                    .with_path(&options.root),
+            );
+            log::error!("{}", err);
+            result.errors.push(err);
             return result;
         }
+
+        log::debug!("Scanning directory: {}", options.root.display());
 
         if !options.root.is_dir() {
             // If the root is a single file, just check if it's a source file
@@ -109,10 +118,18 @@ impl Scanner {
         let entries = match fs::read_dir(dir) {
             Ok(entries) => entries,
             Err(e) => {
-                result.errors.push(AtlasError::io(format!(
+                let err = AtlasError::io(format!(
                     "Failed to read directory {}: {e}",
                     dir.display()
-                )));
+                ))
+                .with_context(
+                    ErrorContext::default()
+                        .with_operation("scan")
+                        .with_path(dir),
+                )
+                .with_source(e.to_string());
+                log::warn!("{}", err);
+                result.errors.push(err);
                 return;
             }
         };
@@ -121,10 +138,18 @@ impl Scanner {
             let entry = match entry {
                 Ok(entry) => entry,
                 Err(e) => {
-                    result.errors.push(AtlasError::io(format!(
+                    let err = AtlasError::io(format!(
                         "Failed to read entry in {}: {e}",
                         dir.display()
-                    )));
+                    ))
+                    .with_context(
+                        ErrorContext::default()
+                            .with_operation("scan")
+                            .with_path(dir),
+                    )
+                    .with_source(e.to_string());
+                    log::warn!("{}", err);
+                    result.errors.push(err);
                     continue;
                 }
             };
@@ -133,10 +158,18 @@ impl Scanner {
             let file_type = match entry.file_type() {
                 Ok(ft) => ft,
                 Err(e) => {
-                    result.errors.push(AtlasError::io(format!(
+                    let err = AtlasError::io(format!(
                         "Failed to get file type for {}: {e}",
                         path.display()
-                    )));
+                    ))
+                    .with_context(
+                        ErrorContext::default()
+                            .with_operation("scan")
+                            .with_path(&path),
+                    )
+                    .with_source(e.to_string());
+                    log::warn!("{}", err);
+                    result.errors.push(err);
                     continue;
                 }
             };
@@ -233,8 +266,17 @@ impl Scanner {
             .into_par_iter()
             .map(|path| {
                 let source_text = fs::read_to_string(&path).map_err(|e| {
-                    AtlasError::io(format!("Failed to read file {}: {e}", path.display()))
+                    let err = AtlasError::io(format!("Failed to read file {}: {e}", path.display()))
+                        .with_context(
+                            ErrorContext::default()
+                                .with_operation("scan_and_read")
+                                .with_path(&path),
+                        )
+                        .with_source(e.to_string());
+                    log::error!("{}", err);
+                    err
                 })?;
+                log::debug!("Read file: {} ({} bytes)", path.display(), source_text.len());
                 Ok(SourceFile::new(path, source_text))
             })
             .collect()

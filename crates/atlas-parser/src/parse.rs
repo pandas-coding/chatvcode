@@ -6,14 +6,22 @@ use crate::chunk::extract_chunks;
 
 pub fn parse_source(source_file: SourceFile) -> AtlasResult<ParseResult> {
     if !source_file.language.is_supported() {
-        return Err(AtlasError::unsupported_language("source file language is not supported yet")
+        let err = AtlasError::unsupported_language("source file language is not supported yet")
             .with_context(
                 ErrorContext::default()
                     .with_operation("parse_source")
                     .with_path(source_file.path.clone())
                     .with_language(source_file.language),
-            ));
+            );
+        log::warn!("{}", err);
+        return Err(err);
     }
+
+    log::debug!(
+        "Parsing {} ({})",
+        source_file.path.display(),
+        source_file.language
+    );
 
     let mut service = ParserService::new();
     let tree = service.parse(&source_file)?;
@@ -22,6 +30,21 @@ pub fn parse_source(source_file: SourceFile) -> AtlasResult<ParseResult> {
 
     let root = tree.root_node();
     let chunks = extract_chunks(&root, &source_file);
+
+    if !errors.is_empty() {
+        log::warn!(
+            "Parse issues in {} ({}): {} error(s)",
+            source_file.path.display(),
+            source_file.language,
+            errors.len()
+        );
+    }
+
+    log::debug!(
+        "Extracted {} chunks from {}",
+        chunks.len(),
+        source_file.path.display()
+    );
 
     Ok(ParseResult::success(source_file, chunks).with_errors(errors))
 }
@@ -80,11 +103,13 @@ pub fn parser_for_language(language: FileLanguage) -> AtlasResult<ParserService>
     if language.is_supported() {
         Ok(ParserService::new())
     } else {
-        Err(AtlasError::unsupported_language("parser is not available for this language")
+        let err = AtlasError::unsupported_language("parser is not available for this language")
             .with_context(
                 ErrorContext::default()
                     .with_operation("parser_for_language")
                     .with_language(language),
-            ))
+            );
+        log::warn!("{}", err);
+        Err(err)
     }
 }

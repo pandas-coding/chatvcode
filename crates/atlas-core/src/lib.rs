@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use rayon::prelude::*;
 
-pub use error::{AtlasError, AtlasResult, ErrorContext, ErrorKind};
+pub use error::{AtlasError, AtlasResult, ErrorContext, ErrorKind, ErrorSeverity};
 pub use model::{
     ChunkKind, ChunkSpan, CodeChunk, FileLanguage, IndexResult, IndexStats, ParseResult, SourceFile,
 };
@@ -30,23 +30,53 @@ pub fn index_path(path: impl Into<PathBuf>, parser: &dyn ParseSource) -> AtlasRe
     let path = path.into();
 
     if !path.exists() {
-        return Err(AtlasError::invalid_input(format!(
+        let err = AtlasError::invalid_input(format!(
             "Path does not exist: {}",
             path.display()
-        )));
+        ));
+        log::error!("{}", err);
+        return Err(err);
     }
+
+    log::info!("Starting index for path: {}", path.display());
 
     let options = ScanOptions::new(&path);
     let source_files = Scanner::scan_and_read(&options);
 
+    let total_scanned = source_files.len();
+    let scan_errors: Vec<_> = source_files.iter().filter(|r| r.is_err()).collect();
+    log::info!(
+        "Scan complete: {} source files found, {} scan errors",
+        total_scanned - scan_errors.len(),
+        scan_errors.len()
+    );
+
     let results: Vec<_> = source_files
         .into_par_iter()
         .map(|result| match result {
-            Ok(source_file) => match parser.parse(source_file) {
-                Ok(parse_result) => Ok(parse_result),
-                Err(e) => Err(e),
-            },
-            Err(e) => Err(e),
+            Ok(source_file) => {
+                log::debug!("Parsing file: {}", source_file.path.display());
+                match parser.parse(source_file) {
+                    Ok(parse_result) => {
+                        if !parse_result.errors.is_empty() {
+                            log::warn!(
+                                "Parse warnings in {}: {}",
+                                parse_result.file.path.display(),
+                                parse_result.errors.len()
+                            );
+                        }
+                        Ok(parse_result)
+                    }
+                    Err(e) => {
+                        log::error!("Failed to parse file: {}", e);
+                        Err(e)
+                    }
+                }
+            }
+            Err(e) => {
+                log::error!("Scan error: {}", e);
+                Err(e)
+            }
         })
         .collect();
 
@@ -60,7 +90,15 @@ pub fn index_path(path: impl Into<PathBuf>, parser: &dyn ParseSource) -> AtlasRe
         }
     }
 
-    Ok(IndexResult::from_parse_results(parse_results, scan_errors))
+    let index_result = IndexResult::from_parse_results(parse_results, scan_errors);
+    log::info!(
+        "Index complete: {} files parsed, {} chunks, {} errors",
+        index_result.stats.parsed_files,
+        index_result.stats.total_chunks,
+        index_result.stats.total_errors
+    );
+
+    Ok(index_result)
 }
 
 #[cfg(test)]
@@ -206,5 +244,42 @@ mod tests {
         let result = index_path(root, &selective_parser).unwrap();
         assert_eq!(result.stats.parsed_files, 1);
         assert_eq!(result.stats.total_errors, 1);
+    }
+
+    #[test]
+    fn test_index_path_nonexistent_path_is_unrecoverable() {
+        let result = index_path("/nonexistent/path", &mock_parser);
+        let err = result.unwrap_err();
+        assert_eq!(err.kind, ErrorKind::InvalidInput);
+        assert_eq!(err.severity, ErrorSeverity::Unrecoverable);
+        assert!(!err.is_recoverable());
+    }
+
+    #[test]
+    fn test_parse_errors_are_recoverable() {
+        let tmp = create_test_project();
+
+        let failing_parser = |_source_file: SourceFile| -> AtlasResult<ParseResult> {
+            Err(AtlasError::parse("mock parse failure"))
+        };
+
+        let result = index_path(tmp.path(), &failing_parser).unwrap();
+        for err in &result.errors {
+            assert!(err.is_recoverable());
+        }
+    }
+
+    #[test]
+    fn test_scan_errors_have_context() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(root.join("src/main.rs"), "fn main() {}").unwrap();
+
+        let result = index_path(root, &mock_parser).unwrap();
+        for err in &result.errors {
+            assert!(err.context.operation.is_some() || err.context.path.is_some());
+        }
     }
 }

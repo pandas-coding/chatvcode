@@ -1,5 +1,5 @@
 use crate::*;
-use atlas_core::{ChunkKind, ErrorKind, FileLanguage, SourceFile};
+use atlas_core::{ChunkKind, ErrorKind, ErrorSeverity, FileLanguage, SourceFile};
 use std::path::PathBuf;
 
 #[test]
@@ -569,4 +569,37 @@ fn chunk_byte_span_matches_source_text_length() {
             chunk.span.end_byte - chunk.span.start_byte
         );
     }
+}
+
+#[test]
+fn unsupported_language_error_is_recoverable() {
+    let file = SourceFile {
+        path: PathBuf::from("data.csv"),
+        language: FileLanguage::Unknown,
+        source_text: "a,b,c".to_string(),
+    };
+
+    let error = parse_source(file).expect_err("should fail");
+    assert!(error.is_recoverable());
+    assert_eq!(error.severity, ErrorSeverity::Recoverable);
+}
+
+#[test]
+fn parse_errors_include_path_and_language() {
+    let file = SourceFile::new("bad.rs", "fn fn fn");
+    let result = parse_source(file).expect("should still return result");
+
+    for err in &result.errors {
+        assert!(err.context.path.is_some());
+        assert!(err.context.language.is_some());
+        assert_eq!(err.context.language, Some(FileLanguage::Rust));
+    }
+}
+
+#[test]
+fn parser_for_language_unsupported_is_recoverable() {
+    let result = parser_for_language(FileLanguage::Unknown);
+    let err = result.unwrap_err();
+    assert!(err.is_recoverable());
+    assert_eq!(err.severity, ErrorSeverity::Recoverable);
 }

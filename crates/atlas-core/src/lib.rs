@@ -14,7 +14,13 @@ pub mod ignore;
 pub mod model;
 pub mod scanner;
 
+/// Trait for parsing source files into [`ParseResult`]s.
+///
+/// This abstraction decouples `atlas-core` from `atlas-parser`, allowing
+/// the parser implementation to be injected (e.g., for testing or future
+/// parser swaps).
 pub trait ParseSource: Send + Sync {
+    /// Parses a single source file and returns the result.
     fn parse(&self, source_file: SourceFile) -> AtlasResult<ParseResult>;
 }
 
@@ -27,6 +33,16 @@ where
     }
 }
 
+/// Indexes all source files under the given path.
+///
+/// This is the main entry point for the indexing pipeline. It performs:
+/// 1. Directory scanning and file discovery (with ignore rules)
+/// 2. Parallel file reading
+/// 3. Parallel parsing via the provided `parser`
+/// 4. Result aggregation and statistics computation
+///
+/// Returns an [`IndexResult`] with all parsed chunks and statistics,
+/// or an [`AtlasError`] if the path is invalid.
 pub fn index_path(path: impl Into<PathBuf>, parser: &dyn ParseSource) -> AtlasResult<IndexResult> {
     let path = path.into();
     let start = Instant::now();

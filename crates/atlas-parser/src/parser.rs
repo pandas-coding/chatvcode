@@ -12,10 +12,17 @@ fn language_fn_for(lang: FileLanguage) -> Option<LanguageFn> {
     }
 }
 
+/// Returns the tree-sitter [`Language`] for the given [`FileLanguage`], if supported.
+///
+/// Returns `None` for `FileLanguage::Unknown`.
 pub fn language_for(lang: FileLanguage) -> Option<Language> {
     language_fn_for(lang).map(Language::new)
 }
 
+/// Wrapper around `tree_sitter::Parser` for parsing source files.
+///
+/// Handles language grammar selection and error conversion. Reuse a single
+/// `ParserService` instance across multiple parse calls for efficiency.
 pub struct ParserService {
     parser: Parser,
 }
@@ -27,10 +34,14 @@ impl std::fmt::Debug for ParserService {
 }
 
 impl ParserService {
+    /// Creates a new parser service.
     pub fn new() -> Self {
         Self { parser: Parser::new() }
     }
 
+    /// Parses a source file into a tree-sitter [`Tree`].
+    ///
+    /// Returns an error if the language is unsupported or parsing fails.
     pub fn parse(&mut self, source_file: &SourceFile) -> AtlasResult<Tree> {
         let lang = language_for(source_file.language).ok_or_else(|| {
             let err = AtlasError::unsupported_language(format!(

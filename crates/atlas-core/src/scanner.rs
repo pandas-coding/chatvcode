@@ -17,10 +17,12 @@ pub struct ScanOptions {
 }
 
 impl ScanOptions {
+    /// Creates scan options with the given root path and no depth limit.
     pub fn new(root: impl Into<PathBuf>) -> Self {
         Self { root: root.into(), max_depth: None }
     }
 
+    /// Sets the maximum directory depth to scan.
     pub fn with_max_depth(mut self, depth: usize) -> Self {
         self.max_depth = Some(depth);
         self
@@ -39,6 +41,7 @@ pub struct ScanResult {
 }
 
 impl ScanResult {
+    /// Creates an empty scan result.
     pub fn new() -> Self {
         Self { source_files: Vec::new(), skipped_files: Vec::new(), errors: Vec::new() }
     }

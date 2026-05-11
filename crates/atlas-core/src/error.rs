@@ -1,18 +1,34 @@
 use std::fmt;
 use std::path::PathBuf;
 
+/// Classification of error types.
+///
+/// Each variant represents a distinct category of failure. The default
+/// severity for each kind is defined in [`ErrorKind::default_severity`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ErrorKind {
+    /// I/O errors (file not found, permission denied, etc.).
     Io,
+    /// Attempted to process an unsupported language.
     UnsupportedLanguage,
+    /// Syntax or parsing errors.
     Parse,
+    /// Invalid user input (e.g., nonexistent path).
     InvalidInput,
+    /// Unexpected internal errors.
     Internal,
 }
 
+/// Severity level indicating whether an error is recoverable.
+///
+/// Recoverable errors (e.g., a single file failing to parse) allow the
+/// pipeline to continue processing other files. Unrecoverable errors
+/// (e.g., invalid input path) halt the entire operation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ErrorSeverity {
+    /// The operation can continue despite this error.
     Recoverable,
+    /// The operation must be aborted.
     Unrecoverable,
 }
 
@@ -26,6 +42,7 @@ impl fmt::Display for ErrorSeverity {
 }
 
 impl ErrorKind {
+    /// Returns the default severity for this error kind.
     pub fn default_severity(self) -> ErrorSeverity {
         match self {
             Self::Io => ErrorSeverity::Recoverable,
@@ -37,80 +54,112 @@ impl ErrorKind {
     }
 }
 
+/// Contextual information attached to an error.
+///
+/// Provides optional metadata (file path, language, operation) to aid
+/// debugging and error reporting. Uses a builder pattern for construction.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ErrorContext {
+    /// File path associated with the error, if applicable.
     pub path: Option<PathBuf>,
+    /// Programming language associated with the error, if applicable.
     pub language: Option<crate::model::FileLanguage>,
+    /// Name of the operation that produced the error.
     pub operation: Option<&'static str>,
 }
 
 impl ErrorContext {
+    /// Attaches a file path to this context.
     pub fn with_path(mut self, path: impl Into<PathBuf>) -> Self {
         self.path = Some(path.into());
         self
     }
 
+    /// Attaches a language to this context.
     pub fn with_language(mut self, language: crate::model::FileLanguage) -> Self {
         self.language = Some(language);
         self
     }
 
+    /// Attaches an operation name to this context.
     pub fn with_operation(mut self, operation: &'static str) -> Self {
         self.operation = Some(operation);
         self
     }
 }
 
+/// A structured error with context and severity information.
+///
+/// `AtlasError` is the primary error type used throughout the atlas pipeline.
+/// It supports optional context (file path, language, operation), an optional
+/// source error chain, and configurable severity.
 #[derive(Debug, Clone)]
 pub struct AtlasError {
+    /// The category of this error.
     pub kind: ErrorKind,
+    /// Human-readable error message.
     pub message: String,
+    /// Optional contextual metadata.
     pub context: ErrorContext,
+    /// Optional source error description (for error chaining).
     pub source: Option<String>,
+    /// Whether this error is recoverable or fatal.
     pub severity: ErrorSeverity,
 }
 
 impl AtlasError {
+    /// Creates a new error with the given kind and message.
+    ///
+    /// Severity is set to the default for the error kind.
     pub fn new(kind: ErrorKind, message: impl Into<String>) -> Self {
         let severity = kind.default_severity();
         Self { kind, message: message.into(), context: ErrorContext::default(), source: None, severity }
     }
 
+    /// Attaches contextual metadata to this error.
     pub fn with_context(mut self, context: ErrorContext) -> Self {
         self.context = context;
         self
     }
 
+    /// Attaches a source error description for error chaining.
     pub fn with_source(mut self, source: impl Into<String>) -> Self {
         self.source = Some(source.into());
         self
     }
 
+    /// Overrides the default severity for this error.
     pub fn with_severity(mut self, severity: ErrorSeverity) -> Self {
         self.severity = severity;
         self
     }
 
+    /// Returns `true` if this error is recoverable (operation can continue).
     pub fn is_recoverable(&self) -> bool {
         self.severity == ErrorSeverity::Recoverable
     }
 
+    /// Creates an I/O error with the given message.
     pub fn io(message: impl Into<String>) -> Self {
         Self::new(ErrorKind::Io, message)
     }
 
+    /// Creates a parse error with the given message.
     pub fn parse(message: impl Into<String>) -> Self {
         Self::new(ErrorKind::Parse, message)
     }
 
+    /// Creates an unsupported language error with the given message.
     pub fn unsupported_language(message: impl Into<String>) -> Self {
         Self::new(ErrorKind::UnsupportedLanguage, message)
     }
 
+    /// Creates an invalid input error with the given message.
     pub fn invalid_input(message: impl Into<String>) -> Self {
         Self::new(ErrorKind::InvalidInput, message)
     }
 
+    /// Creates an internal error with the given message.
     pub fn internal(message: impl Into<String>) -> Self {
         Self::new(ErrorKind::Internal, message)
     }
@@ -153,6 +202,7 @@ impl From<std::io::Error> for AtlasError {
     }
 }
 
+/// Convenience type alias for `Result<T, AtlasError>`.
 pub type AtlasResult<T> = Result<T, AtlasError>;
 
 #[cfg(test)]

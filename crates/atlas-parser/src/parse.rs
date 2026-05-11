@@ -4,6 +4,16 @@ use tree_sitter::Tree;
 use crate::ParserService;
 use crate::chunk::extract_chunks;
 
+/// Parses a source file and extracts all code chunks.
+///
+/// This is the main entry point for single-file parsing. It:
+/// 1. Validates that the language is supported
+/// 2. Parses the source into an AST via tree-sitter
+/// 3. Collects any syntax errors as warnings
+/// 4. Extracts code chunks from the AST
+///
+/// Returns a [`ParseResult`] with chunks and errors, or an [`AtlasError`]
+/// if the language is unsupported or parsing fails entirely.
 pub fn parse_source(source_file: SourceFile) -> AtlasResult<ParseResult> {
     if !source_file.language.is_supported() {
         let err = AtlasError::unsupported_language("source file language is not supported yet")
@@ -99,6 +109,9 @@ fn collect_parse_errors(tree: &Tree, source_file: &SourceFile) -> Vec<AtlasError
     errors
 }
 
+/// Creates a [`ParserService`] configured for the given language.
+///
+/// Returns an error if the language is not supported.
 pub fn parser_for_language(language: FileLanguage) -> AtlasResult<ParserService> {
     if language.is_supported() {
         Ok(ParserService::new())

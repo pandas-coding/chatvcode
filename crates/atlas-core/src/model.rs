@@ -2,17 +2,31 @@ use std::collections::HashMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
 
+/// Supported programming languages for source file parsing.
+///
+/// Each variant corresponds to a language that atlas can parse and extract
+/// code chunks from. The `Unknown` variant represents files with unsupported
+/// or unrecognized extensions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum FileLanguage {
+    /// Rust source files (`.rs`).
     Rust,
+    /// JavaScript source files (`.js`).
     JavaScript,
+    /// TypeScript source files (`.ts`).
     TypeScript,
+    /// JSX files (`.jsx`).
     Jsx,
+    /// TSX files (`.tsx`).
     Tsx,
+    /// Unsupported or unrecognized file extension.
     Unknown,
 }
 
 impl FileLanguage {
+    /// Maps a file extension string to the corresponding [`FileLanguage`].
+    ///
+    /// Returns `Unknown` for unrecognized extensions.
     pub fn from_extension(extension: &str) -> Self {
         match extension {
             "rs" => Self::Rust,
@@ -24,10 +38,14 @@ impl FileLanguage {
         }
     }
 
+    /// Returns a slice of all supported language variants (excluding `Unknown`).
     pub fn all_supported() -> &'static [FileLanguage] {
         &[Self::Rust, Self::JavaScript, Self::TypeScript, Self::Jsx, Self::Tsx]
     }
 
+    /// Detects the language from a file path based on its extension.
+    ///
+    /// Returns `Unknown` if the path has no extension or an unsupported extension.
     pub fn from_path(path: &Path) -> Self {
         path.extension()
             .and_then(|ext| ext.to_str())
@@ -35,10 +53,12 @@ impl FileLanguage {
             .unwrap_or(Self::Unknown)
     }
 
+    /// Returns `true` if this language variant is supported for parsing.
     pub fn is_supported(self) -> bool {
         !matches!(self, Self::Unknown)
     }
 
+    /// Returns the lowercase string representation of the language.
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Rust => "rust",
@@ -57,14 +77,22 @@ impl fmt::Display for FileLanguage {
     }
 }
 
+/// A source file with its detected language and text content.
+///
+/// This is the primary input unit for the parsing pipeline. The language
+/// is automatically detected from the file path extension.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SourceFile {
+    /// Path to the source file.
     pub path: PathBuf,
+    /// Detected programming language.
     pub language: FileLanguage,
+    /// Full text content of the source file.
     pub source_text: String,
 }
 
 impl SourceFile {
+    /// Creates a new `SourceFile` with language auto-detected from the path.
     pub fn new(path: impl Into<PathBuf>, source_text: impl Into<String>) -> Self {
         let path = path.into();
         let language = FileLanguage::from_path(&path);
@@ -73,33 +101,57 @@ impl SourceFile {
     }
 }
 
+/// Byte and line range of a code chunk within its source file.
+///
+/// Line numbers are zero-indexed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChunkSpan {
+    /// Starting byte offset (inclusive).
     pub start_byte: usize,
+    /// Ending byte offset (exclusive).
     pub end_byte: usize,
+    /// Starting line number (zero-indexed).
     pub start_line: usize,
+    /// Ending line number (zero-indexed).
     pub end_line: usize,
 }
 
 impl ChunkSpan {
+    /// Creates a new span with the given byte and line ranges.
     pub fn new(start_byte: usize, end_byte: usize, start_line: usize, end_line: usize) -> Self {
         Self { start_byte, end_byte, start_line, end_line }
     }
 }
 
+/// Classification of code chunk types extracted from AST nodes.
+///
+/// Each variant represents a distinct syntactic construct such as a function,
+/// struct, class, etc.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ChunkKind {
+    /// Function or method definition.
     Function,
+    /// Struct definition (Rust).
     Struct,
+    /// Enum definition.
     Enum,
+    /// Trait definition (Rust).
     Trait,
+    /// Impl block (Rust).
     Impl,
+    /// Class definition (JS/TS).
     Class,
+    /// Interface definition (TS).
     Interface,
+    /// Type alias definition.
     TypeAlias,
+    /// Module declaration.
     Module,
+    /// Constant definition.
     Constant,
+    /// Method definition within a class or impl block.
     Method,
+    /// Unrecognized or unsupported chunk type.
     Unknown,
 }
 
@@ -124,18 +176,33 @@ impl fmt::Display for ChunkKind {
     }
 }
 
+/// A code chunk extracted from a source file.
+///
+/// Represents a single meaningful syntactic unit (function, struct, class, etc.)
+/// identified during parsing. Each chunk has a unique identifier, location span,
+/// and optional symbol name.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CodeChunk {
+    /// Unique identifier for this chunk (generated from path, kind, name, line).
     pub id: String,
+    /// Path to the source file containing this chunk.
     pub file_path: PathBuf,
+    /// Programming language of the source file.
     pub language: FileLanguage,
+    /// Type of code construct this chunk represents.
     pub kind: ChunkKind,
+    /// Extracted symbol name (e.g., function name), if available.
     pub symbol_name: Option<String>,
+    /// Byte and line range of this chunk within the source file.
     pub span: ChunkSpan,
+    /// Source code text of this chunk.
     pub source_text: String,
 }
 
 impl CodeChunk {
+    /// Generates a deterministic unique ID for a chunk.
+    ///
+    /// Format: `<file_path>:<kind>:<symbol_name>:<start_line>`
     pub fn generate_id(file_path: &Path, kind: ChunkKind, symbol_name: Option<&str>, start_line: usize) -> String {
         let file_str = file_path.to_string_lossy();
         let symbol = symbol_name.unwrap_or("_");
@@ -143,47 +210,81 @@ impl CodeChunk {
     }
 }
 
+/// Result of parsing a single source file.
+///
+/// Contains the original file, extracted chunks, and any parse errors
+/// (syntax errors are recoverable and don't prevent chunk extraction).
 #[derive(Debug, Clone)]
 pub struct ParseResult {
+    /// The original source file that was parsed.
     pub file: SourceFile,
+    /// Code chunks extracted from the file.
     pub chunks: Vec<CodeChunk>,
+    /// Parse errors or warnings encountered during parsing.
     pub errors: Vec<crate::error::AtlasError>,
 }
 
 impl ParseResult {
+    /// Creates a successful parse result with no errors.
     pub fn success(file: SourceFile, chunks: Vec<CodeChunk>) -> Self {
         Self { file, chunks, errors: Vec::new() }
     }
 
+    /// Attaches parse errors/warnings to this result.
     pub fn with_errors(mut self, errors: Vec<crate::error::AtlasError>) -> Self {
         self.errors = errors;
         self
     }
 }
 
+/// Aggregated statistics from an indexing operation.
+///
+/// Provides counts and breakdowns by language and chunk kind,
+/// along with timing information.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct IndexStats {
+    /// Total number of files encountered (parsed + skipped/errored).
     pub total_files: usize,
+    /// Number of files successfully parsed.
     pub parsed_files: usize,
+    /// Number of files skipped (unsupported language, binary, etc.).
     pub skipped_files: usize,
+    /// Total number of code chunks extracted.
     pub total_chunks: usize,
+    /// Total number of errors encountered.
     pub total_errors: usize,
+    /// File counts grouped by language.
     pub files_by_language: HashMap<FileLanguage, usize>,
+    /// Chunk counts grouped by language.
     pub chunks_by_language: HashMap<FileLanguage, usize>,
+    /// Chunk counts grouped by chunk kind.
     pub chunks_by_kind: HashMap<ChunkKind, usize>,
+    /// Total bytes of source code processed.
     pub total_source_bytes: usize,
+    /// Total elapsed time in milliseconds.
     pub elapsed_ms: u64,
 }
 
+/// Complete result of an indexing operation across multiple files.
+///
+/// Contains all per-file parse results, top-level errors, and aggregated
+/// statistics. Constructed via [`IndexResult::from_parse_results`].
 #[derive(Debug, Clone, Default)]
 pub struct IndexResult {
+    /// Individual file parse results.
     pub files: Vec<ParseResult>,
+    /// Top-level errors (e.g., files that couldn't be read).
     pub errors: Vec<crate::error::AtlasError>,
+    /// Aggregated statistics across all files.
     pub stats: IndexStats,
 }
 
 
 impl IndexResult {
+    /// Aggregates per-file parse results and top-level errors into an [`IndexResult`].
+    ///
+    /// Computes all statistics (file counts, chunk counts, language/kind breakdowns).
+    /// Elapsed time must be set separately via [`set_elapsed_ms`](Self::set_elapsed_ms).
     pub fn from_parse_results(
         files: Vec<ParseResult>,
         errors: Vec<crate::error::AtlasError>,
@@ -228,6 +329,7 @@ impl IndexResult {
         }
     }
 
+    /// Sets the elapsed time for the indexing operation in milliseconds.
     pub fn set_elapsed_ms(&mut self, ms: u64) {
         self.stats.elapsed_ms = ms;
     }

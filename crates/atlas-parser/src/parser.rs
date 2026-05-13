@@ -8,6 +8,8 @@ fn language_fn_for(lang: FileLanguage) -> Option<LanguageFn> {
         FileLanguage::JavaScript | FileLanguage::Jsx => Some(tree_sitter_javascript::LANGUAGE),
         FileLanguage::TypeScript => Some(tree_sitter_typescript::LANGUAGE_TYPESCRIPT),
         FileLanguage::Tsx => Some(tree_sitter_typescript::LANGUAGE_TSX),
+        FileLanguage::Python => Some(tree_sitter_python::LANGUAGE),
+        FileLanguage::Php => Some(tree_sitter_php::LANGUAGE_PHP),
         FileLanguage::Unknown => None,
     }
 }

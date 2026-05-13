@@ -2,6 +2,8 @@ use atlas_core::{ChunkSpan, CodeChunk, FileLanguage, SourceFile};
 use tree_sitter::Node;
 
 mod chunk_js_ts;
+mod chunk_php;
+mod chunk_python;
 mod chunk_rust;
 
 /// Internal mapping from a [`ChunkKind`] to a tree-sitter node kind and name field.
@@ -16,6 +18,8 @@ fn chunk_defs_for_language(language: FileLanguage) -> Vec<ChunkDef> {
         FileLanguage::Rust => chunk_rust::rust_chunk_defs(),
         FileLanguage::JavaScript | FileLanguage::Jsx => chunk_js_ts::js_ts_chunk_defs(),
         FileLanguage::TypeScript | FileLanguage::Tsx => chunk_js_ts::js_ts_chunk_defs(),
+        FileLanguage::Python => chunk_python::python_chunk_defs(),
+        FileLanguage::Php => chunk_php::php_chunk_defs(),
         FileLanguage::Unknown => Vec::new(),
     }
 }
@@ -126,6 +130,10 @@ fn extract_name_from_node(node: &Node, source_file: &SourceFile) -> Option<Strin
         FileLanguage::JavaScript | FileLanguage::Jsx | FileLanguage::TypeScript | FileLanguage::Tsx
     ) {
         return chunk_js_ts::extract_name_from_node(node, source_file);
+    }
+
+    if language == FileLanguage::Php {
+        return chunk_php::extract_name_from_node(node, source_file);
     }
 
     None

@@ -19,6 +19,10 @@ pub enum FileLanguage {
     Jsx,
     /// TSX files (`.tsx`).
     Tsx,
+    /// Python source files (`.py`).
+    Python,
+    /// PHP source files (`.php`).
+    Php,
     /// Unsupported or unrecognized file extension.
     Unknown,
 }
@@ -34,13 +38,15 @@ impl FileLanguage {
             "jsx" => Self::Jsx,
             "ts" => Self::TypeScript,
             "tsx" => Self::Tsx,
+            "py" => Self::Python,
+            "php" => Self::Php,
             _ => Self::Unknown,
         }
     }
 
     /// Returns a slice of all supported language variants (excluding `Unknown`).
     pub fn all_supported() -> &'static [FileLanguage] {
-        &[Self::Rust, Self::JavaScript, Self::TypeScript, Self::Jsx, Self::Tsx]
+        &[Self::Rust, Self::JavaScript, Self::TypeScript, Self::Jsx, Self::Tsx, Self::Python, Self::Php]
     }
 
     /// Detects the language from a file path based on its extension.
@@ -66,6 +72,8 @@ impl FileLanguage {
             Self::TypeScript => "typescript",
             Self::Jsx => "jsx",
             Self::Tsx => "tsx",
+            Self::Python => "python",
+            Self::Php => "php",
             Self::Unknown => "unknown",
         }
     }
@@ -89,6 +97,8 @@ pub struct SourceFile {
     pub language: FileLanguage,
     /// Full text content of the source file.
     pub source_text: String,
+    /// Whether this file exceeds the large-file threshold.
+    pub is_large: bool,
 }
 
 impl SourceFile {
@@ -97,7 +107,7 @@ impl SourceFile {
         let path = path.into();
         let language = FileLanguage::from_path(&path);
 
-        Self { path, language, source_text: source_text.into() }
+        Self { path, language, source_text: source_text.into(), is_large: false }
     }
 }
 
@@ -335,6 +345,139 @@ impl IndexResult {
     }
 }
 
+/// Configuration options for the indexing pipeline.
+#[derive(Debug, Clone)]
+pub struct IndexOptions {
+    /// Path to the incremental index state file.
+    ///
+    /// If set, the indexer will load the previous state and skip
+    /// unchanged files, then save the updated state after indexing.
+    pub incremental_state_path: Option<PathBuf>,
+    /// File size threshold in bytes above which a file is treated as "large".
+    ///
+    /// Large files may be processed differently (e.g., partial reads,
+    /// limited chunk extraction). Default: 1 MB.
+    pub large_file_threshold: usize,
+    /// Maximum number of lines to read from a large file.
+    ///
+    /// When a file exceeds the large-file threshold, only the first
+    /// `large_file_max_lines` lines are read. Default: 500.
+    pub large_file_max_lines: usize,
+    /// Maximum number of characters a chunk can have before being split.
+    ///
+    /// Chunks exceeding this threshold are subdivided into smaller
+    /// pieces. Default: 3000.
+    pub chunk_split_threshold: usize,
+}
+
+impl Default for IndexOptions {
+    fn default() -> Self {
+        Self {
+            incremental_state_path: None,
+            large_file_threshold: 1024 * 1024,
+            large_file_max_lines: 500,
+            chunk_split_threshold: 3000,
+        }
+    }
+}
+
+/// Recorded state for a single file in the incremental index.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct FileState {
+    /// Last-modified timestamp (seconds since epoch).
+    pub mtime_secs: u64,
+    /// Last-modified timestamp sub-second nanoseconds.
+    pub mtime_nanos: u32,
+    /// File size in bytes at the time of indexing.
+    pub size: u64,
+    /// Number of chunks extracted from this file.
+    pub chunk_count: usize,
+}
+
+/// Persistent state for incremental indexing.
+///
+/// Stored as JSON so it can be inspected and debugged easily.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct IndexState {
+    /// State format version for forward compatibility.
+    pub version: u32,
+    /// Per-file state keyed by normalized path string.
+    pub file_states: HashMap<String, FileState>,
+}
+
+impl IndexState {
+    /// Current state format version.
+    pub const CURRENT_VERSION: u32 = 1;
+
+    /// Creates an empty state with the current version.
+    pub fn new() -> Self {
+        Self { version: Self::CURRENT_VERSION, file_states: HashMap::new() }
+    }
+
+    /// Loads state from a JSON file.
+    pub fn load(path: &Path) -> crate::AtlasResult<Self> {
+        let text = std::fs::read_to_string(path).map_err(|e| {
+            crate::AtlasError::io(format!("Failed to read index state: {}", e))
+                .with_context(crate::ErrorContext::default().with_operation("load_state").with_path(path))
+                .with_source(e.to_string())
+        })?;
+        let state: Self = serde_json::from_str(&text).map_err(|e| {
+            crate::AtlasError::internal(format!("Failed to parse index state: {}", e))
+                .with_context(crate::ErrorContext::default().with_operation("load_state").with_path(path))
+                .with_source(e.to_string())
+        })?;
+        Ok(state)
+    }
+
+    /// Saves state to a JSON file.
+    pub fn save(&self, path: &Path) -> crate::AtlasResult<()> {
+        let text = serde_json::to_string_pretty(self).map_err(|e| {
+            crate::AtlasError::internal(format!("Failed to serialize index state: {}", e))
+                .with_context(crate::ErrorContext::default().with_operation("save_state").with_path(path))
+                .with_source(e.to_string())
+        })?;
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| {
+                crate::AtlasError::io(format!("Failed to create state directory: {}", e))
+                    .with_context(crate::ErrorContext::default().with_operation("save_state").with_path(parent))
+                    .with_source(e.to_string())
+            })?;
+        }
+        std::fs::write(path, text).map_err(|e| {
+            crate::AtlasError::io(format!("Failed to write index state: {}", e))
+                .with_context(crate::ErrorContext::default().with_operation("save_state").with_path(path))
+                .with_source(e.to_string())
+        })?;
+        Ok(())
+    }
+
+    /// Checks whether a file has changed since the last index.
+    pub fn has_file_changed(&self, path: &Path, mtime: std::time::SystemTime, size: u64) -> bool {
+        let key = path.to_string_lossy().to_string();
+        match self.file_states.get(&key) {
+            Some(prev) => {
+                let dur = mtime.duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
+                let secs = dur.as_secs();
+                let nanos = dur.subsec_nanos();
+                prev.mtime_secs != secs || prev.mtime_nanos != nanos || prev.size != size
+            }
+            None => true,
+        }
+    }
+
+    /// Records the state of a file after successful indexing.
+    pub fn record_file(&mut self, path: &Path, mtime: std::time::SystemTime, size: u64, chunk_count: usize) {
+        let dur = mtime.duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
+        let key = path.to_string_lossy().to_string();
+        self.file_states.insert(key, FileState {
+            mtime_secs: dur.as_secs(),
+            mtime_nanos: dur.subsec_nanos(),
+            size,
+            chunk_count,
+        });
+    }
+}
+
 
 #[cfg(test)]
 mod tests {
@@ -367,7 +510,6 @@ mod tests {
 
     #[test]
     fn from_extension_unknown() {
-        assert_eq!(FileLanguage::from_extension("py"), FileLanguage::Unknown);
         assert_eq!(FileLanguage::from_extension("java"), FileLanguage::Unknown);
         assert_eq!(FileLanguage::from_extension("go"), FileLanguage::Unknown);
         assert_eq!(FileLanguage::from_extension(""), FileLanguage::Unknown);
@@ -414,6 +556,8 @@ mod tests {
         assert!(FileLanguage::TypeScript.is_supported());
         assert!(FileLanguage::Jsx.is_supported());
         assert!(FileLanguage::Tsx.is_supported());
+        assert!(FileLanguage::Python.is_supported());
+        assert!(FileLanguage::Php.is_supported());
         assert!(!FileLanguage::Unknown.is_supported());
     }
 

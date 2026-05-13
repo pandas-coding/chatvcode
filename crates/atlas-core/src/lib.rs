@@ -5,12 +5,14 @@ use rayon::prelude::*;
 
 pub use error::{AtlasError, AtlasResult, ErrorContext, ErrorKind, ErrorSeverity};
 pub use model::{
-    ChunkKind, ChunkSpan, CodeChunk, FileLanguage, IndexResult, IndexStats, ParseResult, SourceFile,
+    ChunkKind, ChunkSpan, CodeChunk, FileLanguage, FileState, IndexOptions, IndexResult, IndexState, IndexStats,
+    ParseResult, SourceFile,
 };
 pub use scanner::{ScanOptions, ScanResult, Scanner};
 
 pub mod error;
 pub mod ignore;
+pub mod incremental;
 pub mod model;
 pub mod scanner;
 
@@ -33,17 +35,30 @@ where
     }
 }
 
-/// Indexes all source files under the given path.
+/// Indexes all source files under the given path with default options.
+///
+/// Convenience wrapper around [`index_path_with_options`].
+pub fn index_path(path: impl Into<PathBuf>, parser: &dyn ParseSource) -> AtlasResult<IndexResult> {
+    index_path_with_options(path, parser, &IndexOptions::default())
+}
+
+/// Indexes all source files under the given path with the provided options.
 ///
 /// This is the main entry point for the indexing pipeline. It performs:
 /// 1. Directory scanning and file discovery (with ignore rules)
-/// 2. Parallel file reading
-/// 3. Parallel parsing via the provided `parser`
-/// 4. Result aggregation and statistics computation
+/// 2. Incremental state loading (if configured)
+/// 3. Parallel file reading (with large-file handling)
+/// 4. Parallel parsing via the provided `parser`
+/// 5. Chunk splitting for oversized chunks
+/// 6. Result aggregation, statistics computation, and state persistence
 ///
 /// Returns an [`IndexResult`] with all parsed chunks and statistics,
 /// or an [`AtlasError`] if the path is invalid.
-pub fn index_path(path: impl Into<PathBuf>, parser: &dyn ParseSource) -> AtlasResult<IndexResult> {
+pub fn index_path_with_options(
+    path: impl Into<PathBuf>,
+    parser: &dyn ParseSource,
+    options: &IndexOptions,
+) -> AtlasResult<IndexResult> {
     let path = path.into();
     let start = Instant::now();
 
@@ -58,8 +73,26 @@ pub fn index_path(path: impl Into<PathBuf>, parser: &dyn ParseSource) -> AtlasRe
 
     log::info!("Starting index for path: {}", path.display());
 
-    let options = ScanOptions::new(&path);
-    let source_files = Scanner::scan_and_read(&options);
+    let mut scan_options = ScanOptions::new(&path);
+    scan_options.large_file_threshold = Some(options.large_file_threshold);
+    scan_options.large_file_max_lines = Some(options.large_file_max_lines);
+
+    let incremental_state = if let Some(ref state_path) = options.incremental_state_path {
+        match IndexState::load(state_path) {
+            Ok(state) => {
+                log::info!("Loaded incremental state from {}", state_path.display());
+                Some(state)
+            }
+            Err(e) => {
+                log::warn!("Could not load incremental state: {}", e);
+                None
+            }
+        }
+    } else {
+        None
+    };
+
+    let source_files = Scanner::scan_and_read(&scan_options);
 
     let total_scanned = source_files.len();
     let scan_errors: Vec<_> = source_files.iter().filter(|r| r.is_err()).collect();
@@ -69,7 +102,32 @@ pub fn index_path(path: impl Into<PathBuf>, parser: &dyn ParseSource) -> AtlasRe
         scan_errors.len()
     );
 
-    let results: Vec<_> = source_files
+    let files_to_parse: Vec<_> = if let Some(ref state) = incremental_state {
+        source_files
+            .into_iter()
+            .filter(|result| match result {
+                Ok(sf) => {
+                    match std::fs::metadata(&sf.path) {
+                        Ok(meta) => {
+                            let mtime = meta.modified().unwrap_or(std::time::UNIX_EPOCH);
+                            let size = meta.len();
+                            let changed = state.has_file_changed(&sf.path, mtime, size);
+                            if !changed {
+                                log::debug!("Skipping unchanged file: {}", sf.path.display());
+                            }
+                            changed
+                        }
+                        Err(_) => true,
+                    }
+                }
+                Err(_) => true,
+            })
+            .collect()
+    } else {
+        source_files
+    };
+
+    let results: Vec<_> = files_to_parse
         .into_par_iter()
         .map(|result| match result {
             Ok(source_file) => {
@@ -108,9 +166,40 @@ pub fn index_path(path: impl Into<PathBuf>, parser: &dyn ParseSource) -> AtlasRe
         }
     }
 
+    if options.chunk_split_threshold > 0 {
+        for parse_result in &mut parse_results {
+            let threshold = options.chunk_split_threshold;
+            let mut split_chunks = Vec::new();
+            for chunk in parse_result.chunks.drain(..) {
+                if chunk.source_text.len() > threshold {
+                    let sub_chunks = split_large_chunk(&chunk, threshold);
+                    split_chunks.extend(sub_chunks);
+                } else {
+                    split_chunks.push(chunk);
+                }
+            }
+            parse_result.chunks = split_chunks;
+        }
+    }
+
     let mut index_result = IndexResult::from_parse_results(parse_results, scan_errors);
     let elapsed = start.elapsed();
     index_result.set_elapsed_ms(elapsed.as_millis() as u64);
+
+    if let Some(ref state_path) = options.incremental_state_path {
+        let mut new_state = incremental_state.unwrap_or_else(IndexState::new);
+        for file_result in &index_result.files {
+            let path = &file_result.file.path;
+            if let Ok(meta) = std::fs::metadata(path) {
+                let mtime = meta.modified().unwrap_or(std::time::UNIX_EPOCH);
+                let size = meta.len();
+                new_state.record_file(path, mtime, size, file_result.chunks.len());
+            }
+        }
+        if let Err(e) = new_state.save(state_path) {
+            log::warn!("Failed to save incremental state: {}", e);
+        }
+    }
 
     log::info!(
         "Index complete: {} files parsed, {} chunks, {} errors in {}ms",
@@ -121,6 +210,85 @@ pub fn index_path(path: impl Into<PathBuf>, parser: &dyn ParseSource) -> AtlasRe
     );
 
     Ok(index_result)
+}
+
+/// Splits a large chunk into smaller pieces by blank-line boundaries.
+///
+/// If the chunk cannot be meaningfully split (no blank lines), it is
+/// returned as-is inside a single-element vector.
+fn split_large_chunk(chunk: &CodeChunk, _threshold: usize) -> Vec<CodeChunk> {
+    let lines: Vec<&str> = chunk.source_text.lines().collect();
+    if lines.len() <= 1 {
+        return vec![chunk.clone()];
+    }
+
+    let mut sub_chunks = Vec::new();
+    let mut current_lines: Vec<&str> = Vec::new();
+    let mut current_start_line = chunk.span.start_line;
+    let mut current_start_byte = chunk.span.start_byte;
+    let line_offsets = line_byte_offsets(&chunk.source_text);
+
+    for (i, line) in lines.iter().enumerate() {
+        let is_blank = line.trim().is_empty();
+
+        if is_blank && !current_lines.is_empty() {
+            let text = current_lines.join("\n");
+            if !text.is_empty() {
+                let end_byte = current_start_byte + text.len();
+                let end_line = current_start_line + current_lines.len().saturating_sub(1);
+                sub_chunks.push(make_sub_chunk(chunk, current_start_byte, end_byte, current_start_line, end_line, &text));
+            }
+            current_start_line = chunk.span.start_line + i + 1;
+            current_start_byte = if i + 1 < line_offsets.len() { line_offsets[i + 1] } else { chunk.span.end_byte };
+            current_lines.clear();
+        } else {
+            current_lines.push(line);
+        }
+    }
+
+    if !current_lines.is_empty() {
+        let text = current_lines.join("\n");
+        if !text.is_empty() {
+            let end_byte = current_start_byte + text.len();
+            let end_line = current_start_line + current_lines.len().saturating_sub(1);
+            sub_chunks.push(make_sub_chunk(chunk, current_start_byte, end_byte, current_start_line, end_line, &text));
+        }
+    }
+
+    if sub_chunks.is_empty() {
+        vec![chunk.clone()]
+    } else {
+        sub_chunks
+    }
+}
+
+fn make_sub_chunk(
+    parent: &CodeChunk,
+    start_byte: usize,
+    end_byte: usize,
+    start_line: usize,
+    end_line: usize,
+    text: &str,
+) -> CodeChunk {
+    CodeChunk {
+        id: CodeChunk::generate_id(&parent.file_path, parent.kind, parent.symbol_name.as_deref(), start_line),
+        file_path: parent.file_path.clone(),
+        language: parent.language,
+        kind: parent.kind,
+        symbol_name: parent.symbol_name.clone(),
+        span: ChunkSpan::new(start_byte, end_byte, start_line, end_line),
+        source_text: text.to_string(),
+    }
+}
+
+fn line_byte_offsets(text: &str) -> Vec<usize> {
+    let mut offsets = vec![0];
+    for (i, c) in text.char_indices() {
+        if c == '\n' {
+            offsets.push(i + 1);
+        }
+    }
+    offsets
 }
 
 #[cfg(test)]

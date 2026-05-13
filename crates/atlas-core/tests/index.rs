@@ -1,4 +1,4 @@
-use atlas_core::{index_path, ChunkKind, FileLanguage};
+use atlas_core::{index_path, index_path_with_options, ChunkKind, FileLanguage, IndexOptions};
 use atlas_parser::parse_source;
 use std::fs;
 
@@ -354,4 +354,144 @@ fn index_parallel_consistency_with_many_files() {
     assert_eq!(r1.stats.chunks_by_language, r2.stats.chunks_by_language);
     assert_eq!(r1.stats.chunks_by_kind, r2.stats.chunks_by_kind);
     assert_eq!(r1.stats.total_source_bytes, r2.stats.total_source_bytes);
+}
+
+#[test]
+fn index_python_fixture() {
+    let path = fixtures_dir().join("sample.py");
+    let result = index_path(&path, &parse_source).unwrap();
+
+    assert_eq!(result.stats.total_files, 1);
+    assert_eq!(result.stats.parsed_files, 1);
+    assert!(result.stats.total_chunks >= 2);
+
+    let kinds: Vec<_> = result.files[0].chunks.iter().map(|c| c.kind).collect();
+    assert!(kinds.contains(&ChunkKind::Function));
+    assert!(kinds.contains(&ChunkKind::Class));
+}
+
+#[test]
+fn index_php_fixture() {
+    let path = fixtures_dir().join("sample.php");
+    let result = index_path(&path, &parse_source).unwrap();
+
+    assert_eq!(result.stats.total_files, 1);
+    assert_eq!(result.stats.parsed_files, 1);
+    assert!(result.stats.total_chunks >= 2);
+
+    let kinds: Vec<_> = result.files[0].chunks.iter().map(|c| c.kind).collect();
+    assert!(kinds.contains(&ChunkKind::Function));
+    assert!(kinds.contains(&ChunkKind::Class));
+}
+
+#[test]
+fn index_gitignore_respected() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let root = tmp.path();
+
+    fs::create_dir_all(root.join("src")).unwrap();
+    fs::write(root.join("src/main.rs"), "fn main() {}").unwrap();
+
+    fs::create_dir_all(root.join("generated")).unwrap();
+    fs::write(root.join("generated/output.rs"), "fn generated() {}").unwrap();
+
+    fs::create_dir_all(root.join(".git")).unwrap();
+    fs::write(root.join(".gitignore"), "generated/\n").unwrap();
+
+    let result = index_path(root, &parse_source).unwrap();
+
+    assert_eq!(result.stats.total_files, 1);
+    for file in &result.files {
+        let p = file.file.path.to_string_lossy();
+        assert!(!p.contains("generated"), "gitignore should skip generated/: {p}");
+    }
+}
+
+#[test]
+fn index_large_file_partial_read() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let root = tmp.path();
+
+    let mut big_content = String::new();
+    for i in 0..2000 {
+        big_content.push_str(&format!("fn func_{}() {{}}\n", i));
+    }
+    fs::write(root.join("big.rs"), &big_content).unwrap();
+
+    let mut options = IndexOptions::default();
+    options.large_file_threshold = 100;
+    options.large_file_max_lines = 50;
+
+    let result = index_path_with_options(root, &parse_source, &options).unwrap();
+
+    assert_eq!(result.stats.total_files, 1);
+    assert!(result.files[0].file.is_large);
+    let source_len = result.files[0].file.source_text.len();
+    assert!(source_len < big_content.len(), "large file should be partially read");
+}
+
+#[test]
+fn index_chunk_split_threshold() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let root = tmp.path();
+
+    let mut long_code = String::from("fn big() {\n");
+    for i in 0..100 {
+        long_code.push_str(&format!("    let x{} = {};\n\n", i, i));
+    }
+    long_code.push_str("}\n");
+    fs::write(root.join("big_fn.rs"), &long_code).unwrap();
+
+    let mut options = IndexOptions::default();
+    options.chunk_split_threshold = 200;
+
+    let result = index_path_with_options(root, &parse_source, &options).unwrap();
+
+    assert!(result.stats.total_chunks > 1, "chunk should be split when exceeding threshold");
+}
+
+#[test]
+fn index_incremental_skips_unchanged_files() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let root = tmp.path();
+    let state_path = tmp.path().join(".code-atlas/state.json");
+
+    fs::create_dir_all(root.join("src")).unwrap();
+    fs::write(root.join("src/main.rs"), "fn main() {}").unwrap();
+
+    let mut options = IndexOptions::default();
+    options.incremental_state_path = Some(state_path.clone());
+
+    let result1 = index_path_with_options(root, &parse_source, &options).unwrap();
+    assert_eq!(result1.stats.total_files, 1);
+    assert_eq!(result1.stats.parsed_files, 1);
+
+    assert!(state_path.exists(), "state file should be created");
+
+    let result2 = index_path_with_options(root, &parse_source, &options).unwrap();
+    assert_eq!(result2.stats.total_files, 0, "unchanged files should be skipped");
+    assert_eq!(result2.stats.parsed_files, 0);
+}
+
+#[test]
+fn index_incremental_reindexes_changed_files() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let root = tmp.path();
+    let state_path = tmp.path().join(".code-atlas/state.json");
+
+    fs::create_dir_all(root.join("src")).unwrap();
+    fs::write(root.join("src/main.rs"), "fn main() {}").unwrap();
+
+    let mut options = IndexOptions::default();
+    options.incremental_state_path = Some(state_path.clone());
+
+    let result1 = index_path_with_options(root, &parse_source, &options).unwrap();
+    assert_eq!(result1.stats.parsed_files, 1);
+
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    fs::write(root.join("src/main.rs"), "fn updated() {}").unwrap();
+
+    let result2 = index_path_with_options(root, &parse_source, &options).unwrap();
+    assert_eq!(result2.stats.parsed_files, 1, "changed files should be re-indexed");
+    assert_eq!(result2.stats.total_chunks, 1);
 }

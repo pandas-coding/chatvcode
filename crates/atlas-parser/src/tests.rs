@@ -8,6 +8,7 @@ fn unsupported_language_returns_structured_error() {
         path: PathBuf::from("README.md"),
         language: FileLanguage::Unknown,
         source_text: "# title".to_string(),
+        is_large: false,
     };
 
     let error = parse_source(file).expect_err("unknown language should fail");
@@ -76,6 +77,8 @@ fn language_for_returns_correct_language() {
     assert!(language_for(FileLanguage::TypeScript).is_some());
     assert!(language_for(FileLanguage::Tsx).is_some());
     assert!(language_for(FileLanguage::Jsx).is_some());
+    assert!(language_for(FileLanguage::Python).is_some());
+    assert!(language_for(FileLanguage::Php).is_some());
     assert!(language_for(FileLanguage::Unknown).is_none());
 }
 
@@ -406,6 +409,7 @@ fn unsupported_language_error_includes_context() {
         path: PathBuf::from("data.csv"),
         language: FileLanguage::Unknown,
         source_text: "a,b,c".to_string(),
+        is_large: false,
     };
 
     let error = parse_source(file).expect_err("should fail");
@@ -577,6 +581,7 @@ fn unsupported_language_error_is_recoverable() {
         path: PathBuf::from("data.csv"),
         language: FileLanguage::Unknown,
         source_text: "a,b,c".to_string(),
+        is_large: false,
     };
 
     let error = parse_source(file).expect_err("should fail");
@@ -602,4 +607,67 @@ fn parser_for_language_unsupported_is_recoverable() {
     let err = result.unwrap_err();
     assert!(err.is_recoverable());
     assert_eq!(err.severity, ErrorSeverity::Recoverable);
+}
+
+#[test]
+fn python_file_parses_successfully() {
+    let file = SourceFile::new("test.py", "def hello():\n    print('world')\n");
+    let result = parse_source(file).expect("Python should parse");
+
+    assert_eq!(result.file.language, FileLanguage::Python);
+    assert!(result.errors.is_empty(), "no parse errors expected");
+}
+
+#[test]
+fn python_function_chunk_extraction() {
+    let code = "def greet(name):\n    return f'Hello {name}'\n";
+    let file = SourceFile::new("test.py", code);
+    let result = parse_source(file).expect("should parse");
+
+    assert!(!result.chunks.is_empty());
+    let fn_chunk = result.chunks.iter().find(|c| c.kind == ChunkKind::Function);
+    assert!(fn_chunk.is_some());
+    assert_eq!(fn_chunk.unwrap().symbol_name.as_deref(), Some("greet"));
+}
+
+#[test]
+fn python_class_chunk_extraction() {
+    let code = "class Animal:\n    def __init__(self, name):\n        self.name = name\n";
+    let file = SourceFile::new("test.py", code);
+    let result = parse_source(file).expect("should parse");
+
+    let class_chunk = result.chunks.iter().find(|c| c.kind == ChunkKind::Class);
+    assert!(class_chunk.is_some());
+    assert_eq!(class_chunk.unwrap().symbol_name.as_deref(), Some("Animal"));
+}
+
+#[test]
+fn php_file_parses_successfully() {
+    let file = SourceFile::new("test.php", "<?php\necho 'Hello';\n?>");
+    let result = parse_source(file).expect("PHP should parse");
+
+    assert_eq!(result.file.language, FileLanguage::Php);
+}
+
+#[test]
+fn php_function_chunk_extraction() {
+    let code = "<?php\nfunction greet($name) {\n    return 'Hello ' . $name;\n}\n?>";
+    let file = SourceFile::new("test.php", code);
+    let result = parse_source(file).expect("should parse");
+
+    assert!(!result.chunks.is_empty());
+    let fn_chunk = result.chunks.iter().find(|c| c.kind == ChunkKind::Function);
+    assert!(fn_chunk.is_some());
+    assert_eq!(fn_chunk.unwrap().symbol_name.as_deref(), Some("greet"));
+}
+
+#[test]
+fn php_class_chunk_extraction() {
+    let code = "<?php\nclass Animal {\n    public $name;\n    public function __construct($name) {\n        $this->name = $name;\n    }\n}\n?>";
+    let file = SourceFile::new("test.php", code);
+    let result = parse_source(file).expect("should parse");
+
+    let class_chunk = result.chunks.iter().find(|c| c.kind == ChunkKind::Class);
+    assert!(class_chunk.is_some());
+    assert_eq!(class_chunk.unwrap().symbol_name.as_deref(), Some("Animal"));
 }

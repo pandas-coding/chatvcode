@@ -1,14 +1,11 @@
-pub fn add(left: u64, right: u64) -> u64 {
-    left + right
-}
+mod config;
+mod embedding;
+mod error;
+mod model;
+mod store;
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn it_works() {
-        let result = add(2, 2);
-        assert_eq!(result, 4);
-    }
-}
+pub use config::EmbeddingConfig;
+pub use embedding::EmbeddingService;
+pub use error::{VdbError, VdbResult};
+pub use model::{EmbeddingVector, SearchQuery, SearchResult};
+pub use store::VectorStore;

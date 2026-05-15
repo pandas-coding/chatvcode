@@ -60,20 +60,18 @@ impl ParserService {
             err
         })?;
 
-        self.parser
-            .set_language(&lang)
-            .map_err(|e| {
-                let err = AtlasError::internal(e.to_string())
-                    .with_context(
-                        ErrorContext::default()
-                            .with_operation("parse")
-                            .with_path(source_file.path.clone())
-                            .with_language(source_file.language),
-                    )
-                    .with_source(e.to_string());
-                log::error!("{}", err);
-                err
-            })?;
+        self.parser.set_language(&lang).map_err(|e| {
+            let err = AtlasError::internal(e.to_string())
+                .with_context(
+                    ErrorContext::default()
+                        .with_operation("parse")
+                        .with_path(source_file.path.clone())
+                        .with_language(source_file.language),
+                )
+                .with_source(e.to_string());
+            log::error!("{}", err);
+            err
+        })?;
 
         self.parser
             .parse(&source_file.source_text, None)

@@ -18,9 +18,7 @@ fn main() {
             println!("Index result for: {}", cli.path.display());
             println!(
                 "  files: {} parsed, {} skipped, {} total",
-                result.stats.parsed_files,
-                result.stats.skipped_files,
-                result.stats.total_files,
+                result.stats.parsed_files, result.stats.skipped_files, result.stats.total_files,
             );
             println!("  chunks: {}", result.stats.total_chunks);
             println!("  errors: {}", result.stats.total_errors);

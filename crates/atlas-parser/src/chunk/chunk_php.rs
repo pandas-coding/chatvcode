@@ -12,9 +12,17 @@ use crate::chunk::ChunkDef;
 /// `method_declaration`, `namespace_definition`.
 pub fn php_chunk_defs() -> Vec<ChunkDef> {
     vec![
-        ChunkDef { kind: ChunkKind::Function, node_kind: "function_definition", name_field: "name" },
+        ChunkDef {
+            kind: ChunkKind::Function,
+            node_kind: "function_definition",
+            name_field: "name",
+        },
         ChunkDef { kind: ChunkKind::Class, node_kind: "class_declaration", name_field: "name" },
-        ChunkDef { kind: ChunkKind::Interface, node_kind: "interface_declaration", name_field: "name" },
+        ChunkDef {
+            kind: ChunkKind::Interface,
+            node_kind: "interface_declaration",
+            name_field: "name",
+        },
         ChunkDef { kind: ChunkKind::Trait, node_kind: "trait_declaration", name_field: "name" },
         ChunkDef { kind: ChunkKind::Enum, node_kind: "enum_declaration", name_field: "name" },
         ChunkDef { kind: ChunkKind::Method, node_kind: "method_declaration", name_field: "name" },

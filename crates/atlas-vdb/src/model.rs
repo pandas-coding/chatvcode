@@ -10,11 +10,7 @@ pub struct EmbeddingVector {
 impl EmbeddingVector {
     pub fn new(chunk_id: impl Into<String>, vector: Vec<f32>) -> Self {
         let dimension = vector.len();
-        Self {
-            chunk_id: chunk_id.into(),
-            vector,
-            dimension,
-        }
+        Self { chunk_id: chunk_id.into(), vector, dimension }
     }
 
     pub fn len(&self) -> usize {
@@ -35,11 +31,7 @@ pub struct SearchQuery {
 
 impl SearchQuery {
     pub fn new(text: impl Into<String>, top_k: usize) -> Self {
-        Self {
-            text: text.into(),
-            top_k,
-            min_score: None,
-        }
+        Self { text: text.into(), top_k, min_score: None }
     }
 
     pub fn with_min_score(mut self, min_score: f32) -> Self {
@@ -57,11 +49,7 @@ pub struct SearchResult {
 
 impl SearchResult {
     pub fn new(chunk_id: impl Into<String>, score: f32) -> Self {
-        Self {
-            chunk_id: chunk_id.into(),
-            score,
-            chunk: None,
-        }
+        Self { chunk_id: chunk_id.into(), score, chunk: None }
     }
 
     pub fn with_chunk(mut self, chunk: CodeChunk) -> Self {

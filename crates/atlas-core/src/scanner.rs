@@ -101,15 +101,13 @@ impl Scanner {
         let mut result = ScanResult::new();
 
         if !options.root.exists() {
-            let err = AtlasError::io(format!(
-                "Root path does not exist: {}",
-                options.root.display()
-            ))
-            .with_context(
-                ErrorContext::default()
-                    .with_operation("scan")
-                    .with_path(&options.root),
-            );
+            let err =
+                AtlasError::io(format!("Root path does not exist: {}", options.root.display()))
+                    .with_context(
+                        ErrorContext::default()
+                            .with_operation("scan")
+                            .with_path(&options.root),
+                    );
             log::error!("{}", err);
             result.errors.push(err);
             return result;
@@ -151,7 +149,9 @@ impl Scanner {
 
         let walker = builder
             .filter_entry(|entry: &::ignore::DirEntry| {
-                if let Some(ft) = entry.file_type() && ft.is_dir() {
+                if let Some(ft) = entry.file_type()
+                    && ft.is_dir()
+                {
                     return !ignore::should_ignore_dir(entry.path());
                 }
                 true
@@ -182,12 +182,11 @@ impl Scanner {
                     }
                 }
                 Err(e) => {
-                    let err = AtlasError::io(format!("Walk error: {}", e))
-                        .with_context(
-                            ErrorContext::default()
-                                .with_operation("scan")
-                                .with_path(root),
-                        );
+                    let err = AtlasError::io(format!("Walk error: {}", e)).with_context(
+                        ErrorContext::default()
+                            .with_operation("scan")
+                            .with_path(root),
+                    );
                     log::warn!("{}", err);
                     result.errors.push(err);
                 }
@@ -213,16 +212,14 @@ impl Scanner {
         let entries = match fs::read_dir(dir) {
             Ok(entries) => entries,
             Err(e) => {
-                let err = AtlasError::io(format!(
-                    "Failed to read directory {}: {e}",
-                    dir.display()
-                ))
-                .with_context(
-                    ErrorContext::default()
-                        .with_operation("scan")
-                        .with_path(dir),
-                )
-                .with_source(e.to_string());
+                let err =
+                    AtlasError::io(format!("Failed to read directory {}: {e}", dir.display()))
+                        .with_context(
+                            ErrorContext::default()
+                                .with_operation("scan")
+                                .with_path(dir),
+                        )
+                        .with_source(e.to_string());
                 log::warn!("{}", err);
                 result.errors.push(err);
                 return;
@@ -233,16 +230,14 @@ impl Scanner {
             let entry = match entry {
                 Ok(entry) => entry,
                 Err(e) => {
-                    let err = AtlasError::io(format!(
-                        "Failed to read entry in {}: {e}",
-                        dir.display()
-                    ))
-                    .with_context(
-                        ErrorContext::default()
-                            .with_operation("scan")
-                            .with_path(dir),
-                    )
-                    .with_source(e.to_string());
+                    let err =
+                        AtlasError::io(format!("Failed to read entry in {}: {e}", dir.display()))
+                            .with_context(
+                                ErrorContext::default()
+                                    .with_operation("scan")
+                                    .with_path(dir),
+                            )
+                            .with_source(e.to_string());
                     log::warn!("{}", err);
                     result.errors.push(err);
                     continue;
@@ -374,13 +369,14 @@ impl Scanner {
                     Self::read_first_n_lines(&path, large_max_lines)?
                 } else {
                     fs::read_to_string(&path).map_err(|e| {
-                        let err = AtlasError::io(format!("Failed to read file {}: {e}", path.display()))
-                            .with_context(
-                                ErrorContext::default()
-                                    .with_operation("scan_and_read")
-                                    .with_path(&path),
-                            )
-                            .with_source(e.to_string());
+                        let err =
+                            AtlasError::io(format!("Failed to read file {}: {e}", path.display()))
+                                .with_context(
+                                    ErrorContext::default()
+                                        .with_operation("scan_and_read")
+                                        .with_path(&path),
+                                )
+                                .with_source(e.to_string());
                         log::error!("{}", err);
                         err
                     })?
@@ -412,13 +408,14 @@ impl Scanner {
         let mut lines = Vec::new();
         for line in reader.lines().take(n) {
             let line = line.map_err(|e| {
-                let err = AtlasError::io(format!("Failed to read line from {}: {e}", path.display()))
-                    .with_context(
-                        ErrorContext::default()
-                            .with_operation("read_first_n_lines")
-                            .with_path(path),
-                    )
-                    .with_source(e.to_string());
+                let err =
+                    AtlasError::io(format!("Failed to read line from {}: {e}", path.display()))
+                        .with_context(
+                            ErrorContext::default()
+                                .with_operation("read_first_n_lines")
+                                .with_path(path),
+                        )
+                        .with_source(e.to_string());
                 log::error!("{}", err);
                 err
             })?;

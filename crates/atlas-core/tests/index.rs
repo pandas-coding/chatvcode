@@ -1,4 +1,4 @@
-use atlas_core::{index_path, index_path_with_options, ChunkKind, FileLanguage, IndexOptions};
+use atlas_core::{ChunkKind, FileLanguage, IndexOptions, index_path, index_path_with_options};
 use atlas_parser::parse_source;
 use std::fs;
 
@@ -76,11 +76,7 @@ fn index_directory_with_multiple_files() {
     assert!(result.errors.is_empty());
     assert!(result.stats.total_chunks >= 13);
 
-    let languages: Vec<_> = result
-        .files
-        .iter()
-        .map(|f| f.file.language)
-        .collect();
+    let languages: Vec<_> = result.files.iter().map(|f| f.file.language).collect();
     assert!(languages.contains(&FileLanguage::Rust));
     assert!(languages.contains(&FileLanguage::JavaScript));
     assert!(languages.contains(&FileLanguage::TypeScript));
@@ -162,11 +158,8 @@ fn index_rust_fixture_all_chunk_kinds() {
     let path = fixtures_dir().join("sample.rs");
     let result = index_path(&path, &parse_source).unwrap();
 
-    let kinds: std::collections::HashSet<_> = result.files[0]
-        .chunks
-        .iter()
-        .map(|c| c.kind)
-        .collect();
+    let kinds: std::collections::HashSet<_> =
+        result.files[0].chunks.iter().map(|c| c.kind).collect();
 
     assert!(kinds.contains(&ChunkKind::Struct));
     assert!(kinds.contains(&ChunkKind::Function));
@@ -215,11 +208,8 @@ fn index_typescript_fixture_chunk_names() {
 fn index_directory_all_languages_present() {
     let result = index_path(fixtures_dir(), &parse_source).unwrap();
 
-    let languages: std::collections::HashSet<_> = result
-        .files
-        .iter()
-        .map(|f| f.file.language)
-        .collect();
+    let languages: std::collections::HashSet<_> =
+        result.files.iter().map(|f| f.file.language).collect();
 
     assert!(languages.contains(&FileLanguage::Rust));
     assert!(languages.contains(&FileLanguage::JavaScript));
@@ -234,10 +224,7 @@ fn index_directory_all_chunks_have_valid_spans() {
         for chunk in &file_result.chunks {
             assert!(chunk.span.start_byte < chunk.span.end_byte);
             assert!(chunk.span.start_line <= chunk.span.end_line);
-            assert_eq!(
-                chunk.source_text.len(),
-                chunk.span.end_byte - chunk.span.start_byte
-            );
+            assert_eq!(chunk.source_text.len(), chunk.span.end_byte - chunk.span.start_byte);
         }
     }
 }
@@ -329,11 +316,8 @@ fn index_parallel_consistency_with_many_files() {
 
     fs::create_dir_all(root.join("src")).unwrap();
     for i in 0..20 {
-        let file_name = if i % 2 == 0 {
-            format!("src/file_{i:02}.rs")
-        } else {
-            format!("src/file_{i:02}.js")
-        };
+        let file_name =
+            if i % 2 == 0 { format!("src/file_{i:02}.rs") } else { format!("src/file_{i:02}.js") };
         let code = if i % 2 == 0 {
             format!("fn func_{i}() {{}}")
         } else {

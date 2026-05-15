@@ -5,8 +5,8 @@ use rayon::prelude::*;
 
 pub use error::{AtlasError, AtlasResult, ErrorContext, ErrorKind, ErrorSeverity};
 pub use model::{
-    ChunkKind, ChunkSpan, CodeChunk, FileLanguage, FileState, IndexOptions, IndexResult, IndexState, IndexStats,
-    ParseResult, SourceFile,
+    ChunkKind, ChunkSpan, CodeChunk, FileLanguage, FileState, IndexOptions, IndexResult,
+    IndexState, IndexStats, ParseResult, SourceFile,
 };
 pub use scanner::{ScanOptions, ScanResult, Scanner};
 
@@ -63,10 +63,7 @@ pub fn index_path_with_options(
     let start = Instant::now();
 
     if !path.exists() {
-        let err = AtlasError::invalid_input(format!(
-            "Path does not exist: {}",
-            path.display()
-        ));
+        let err = AtlasError::invalid_input(format!("Path does not exist: {}", path.display()));
         log::error!("{}", err);
         return Err(err);
     }
@@ -106,20 +103,18 @@ pub fn index_path_with_options(
         source_files
             .into_iter()
             .filter(|result| match result {
-                Ok(sf) => {
-                    match std::fs::metadata(&sf.path) {
-                        Ok(meta) => {
-                            let mtime = meta.modified().unwrap_or(std::time::UNIX_EPOCH);
-                            let size = meta.len();
-                            let changed = state.has_file_changed(&sf.path, mtime, size);
-                            if !changed {
-                                log::debug!("Skipping unchanged file: {}", sf.path.display());
-                            }
-                            changed
+                Ok(sf) => match std::fs::metadata(&sf.path) {
+                    Ok(meta) => {
+                        let mtime = meta.modified().unwrap_or(std::time::UNIX_EPOCH);
+                        let size = meta.len();
+                        let changed = state.has_file_changed(&sf.path, mtime, size);
+                        if !changed {
+                            log::debug!("Skipping unchanged file: {}", sf.path.display());
                         }
-                        Err(_) => true,
+                        changed
                     }
-                }
+                    Err(_) => true,
+                },
                 Err(_) => true,
             })
             .collect()
@@ -236,10 +231,18 @@ fn split_large_chunk(chunk: &CodeChunk, _threshold: usize) -> Vec<CodeChunk> {
             if !text.is_empty() {
                 let end_byte = current_start_byte + text.len();
                 let end_line = current_start_line + current_lines.len().saturating_sub(1);
-                sub_chunks.push(make_sub_chunk(chunk, current_start_byte, end_byte, current_start_line, end_line, &text));
+                sub_chunks.push(make_sub_chunk(
+                    chunk,
+                    current_start_byte,
+                    end_byte,
+                    current_start_line,
+                    end_line,
+                    &text,
+                ));
             }
             current_start_line = chunk.span.start_line + i + 1;
-            current_start_byte = if i + 1 < line_offsets.len() { line_offsets[i + 1] } else { chunk.span.end_byte };
+            current_start_byte =
+                if i + 1 < line_offsets.len() { line_offsets[i + 1] } else { chunk.span.end_byte };
             current_lines.clear();
         } else {
             current_lines.push(line);
@@ -251,15 +254,18 @@ fn split_large_chunk(chunk: &CodeChunk, _threshold: usize) -> Vec<CodeChunk> {
         if !text.is_empty() {
             let end_byte = current_start_byte + text.len();
             let end_line = current_start_line + current_lines.len().saturating_sub(1);
-            sub_chunks.push(make_sub_chunk(chunk, current_start_byte, end_byte, current_start_line, end_line, &text));
+            sub_chunks.push(make_sub_chunk(
+                chunk,
+                current_start_byte,
+                end_byte,
+                current_start_line,
+                end_line,
+                &text,
+            ));
         }
     }
 
-    if sub_chunks.is_empty() {
-        vec![chunk.clone()]
-    } else {
-        sub_chunks
-    }
+    if sub_chunks.is_empty() { vec![chunk.clone()] } else { sub_chunks }
 }
 
 fn make_sub_chunk(
@@ -271,7 +277,12 @@ fn make_sub_chunk(
     text: &str,
 ) -> CodeChunk {
     CodeChunk {
-        id: CodeChunk::generate_id(&parent.file_path, parent.kind, parent.symbol_name.as_deref(), start_line),
+        id: CodeChunk::generate_id(
+            &parent.file_path,
+            parent.kind,
+            parent.symbol_name.as_deref(),
+            start_line,
+        ),
         file_path: parent.file_path.clone(),
         language: parent.language,
         kind: parent.kind,
@@ -398,7 +409,8 @@ mod tests {
 
         fs::create_dir_all(root.join("src")).unwrap();
         for i in 0..20 {
-            fs::write(root.join(format!("src/file_{i:02}.rs")), format!("fn func_{i}() {{}}")).unwrap();
+            fs::write(root.join(format!("src/file_{i:02}.rs")), format!("fn func_{i}() {{}}"))
+                .unwrap();
         }
 
         let result1 = index_path(root, &mock_parser).unwrap();
@@ -429,7 +441,12 @@ mod tests {
                 Err(AtlasError::parse("selective failure"))
             } else {
                 let chunk = CodeChunk {
-                    id: CodeChunk::generate_id(&source_file.path, ChunkKind::Function, Some("good"), 0),
+                    id: CodeChunk::generate_id(
+                        &source_file.path,
+                        ChunkKind::Function,
+                        Some("good"),
+                        0,
+                    ),
                     file_path: source_file.path.clone(),
                     language: source_file.language,
                     kind: ChunkKind::Function,

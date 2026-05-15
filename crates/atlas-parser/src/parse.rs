@@ -27,11 +27,7 @@ pub fn parse_source(source_file: SourceFile) -> AtlasResult<ParseResult> {
         return Err(err);
     }
 
-    log::debug!(
-        "Parsing {} ({})",
-        source_file.path.display(),
-        source_file.language
-    );
+    log::debug!("Parsing {} ({})", source_file.path.display(), source_file.language);
 
     let mut service = ParserService::new();
     let tree = service.parse(&source_file)?;
@@ -50,11 +46,7 @@ pub fn parse_source(source_file: SourceFile) -> AtlasResult<ParseResult> {
         );
     }
 
-    log::debug!(
-        "Extracted {} chunks from {}",
-        chunks.len(),
-        source_file.path.display()
-    );
+    log::debug!("Extracted {} chunks from {}", chunks.len(), source_file.path.display());
 
     Ok(ParseResult::success(source_file, chunks).with_errors(errors))
 }

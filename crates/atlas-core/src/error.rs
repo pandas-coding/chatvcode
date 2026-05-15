@@ -113,7 +113,13 @@ impl AtlasError {
     /// Severity is set to the default for the error kind.
     pub fn new(kind: ErrorKind, message: impl Into<String>) -> Self {
         let severity = kind.default_severity();
-        Self { kind, message: message.into(), context: ErrorContext::default(), source: None, severity }
+        Self {
+            kind,
+            message: message.into(),
+            context: ErrorContext::default(),
+            source: None,
+            severity,
+        }
     }
 
     /// Attaches contextual metadata to this error.
@@ -198,7 +204,9 @@ impl std::error::Error for AtlasError {
 impl From<std::io::Error> for AtlasError {
     fn from(value: std::io::Error) -> Self {
         let path_context = ErrorContext::default();
-        AtlasError::io(value.to_string()).with_source(value.to_string()).with_context(path_context)
+        AtlasError::io(value.to_string())
+            .with_source(value.to_string())
+            .with_context(path_context)
     }
 }
 
@@ -270,7 +278,13 @@ mod tests {
         let atlas_err: AtlasError = io_err.into();
         assert_eq!(atlas_err.kind, ErrorKind::Io);
         assert!(atlas_err.source.is_some());
-        assert!(atlas_err.source.as_ref().unwrap().contains("file not found"));
+        assert!(
+            atlas_err
+                .source
+                .as_ref()
+                .unwrap()
+                .contains("file not found")
+        );
     }
 
     #[test]

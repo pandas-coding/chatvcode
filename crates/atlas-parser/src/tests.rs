@@ -493,7 +493,11 @@ fn rust_multiline_struct_span() {
     let file = SourceFile::new("test.rs", code);
     let result = parse_source(file).expect("should parse");
 
-    let chunk = result.chunks.iter().find(|c| c.kind == ChunkKind::Struct).unwrap();
+    let chunk = result
+        .chunks
+        .iter()
+        .find(|c| c.kind == ChunkKind::Struct)
+        .unwrap();
     assert_eq!(chunk.span.start_line, 0);
     assert_eq!(chunk.span.end_line, 3);
 }
@@ -505,7 +509,11 @@ fn rust_multiple_functions() {
     let result = parse_source(file).expect("should parse");
 
     assert_eq!(result.chunks.len(), 3);
-    let names: Vec<_> = result.chunks.iter().filter_map(|c| c.symbol_name.as_deref()).collect();
+    let names: Vec<_> = result
+        .chunks
+        .iter()
+        .filter_map(|c| c.symbol_name.as_deref())
+        .collect();
     assert!(names.contains(&"foo"));
     assert!(names.contains(&"bar"));
     assert!(names.contains(&"baz"));
@@ -517,7 +525,11 @@ fn js_const_with_arrow_no_chunk() {
     let file = SourceFile::new("test.js", code);
     let result = parse_source(file).expect("should parse");
 
-    let const_chunks: Vec<_> = result.chunks.iter().filter(|c| c.kind == ChunkKind::Constant).collect();
+    let const_chunks: Vec<_> = result
+        .chunks
+        .iter()
+        .filter(|c| c.kind == ChunkKind::Constant)
+        .collect();
     assert!(!const_chunks.is_empty());
 }
 
@@ -568,10 +580,7 @@ fn chunk_byte_span_matches_source_text_length() {
     let result = parse_source(file).expect("should parse");
 
     for chunk in &result.chunks {
-        assert_eq!(
-            chunk.source_text.len(),
-            chunk.span.end_byte - chunk.span.start_byte
-        );
+        assert_eq!(chunk.source_text.len(), chunk.span.end_byte - chunk.span.start_byte);
     }
 }
 

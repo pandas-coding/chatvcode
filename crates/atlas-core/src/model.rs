@@ -46,7 +46,15 @@ impl FileLanguage {
 
     /// Returns a slice of all supported language variants (excluding `Unknown`).
     pub fn all_supported() -> &'static [FileLanguage] {
-        &[Self::Rust, Self::JavaScript, Self::TypeScript, Self::Jsx, Self::Tsx, Self::Python, Self::Php]
+        &[
+            Self::Rust,
+            Self::JavaScript,
+            Self::TypeScript,
+            Self::Jsx,
+            Self::Tsx,
+            Self::Python,
+            Self::Php,
+        ]
     }
 
     /// Detects the language from a file path based on its extension.
@@ -213,7 +221,12 @@ impl CodeChunk {
     /// Generates a deterministic unique ID for a chunk.
     ///
     /// Format: `<file_path>:<kind>:<symbol_name>:<start_line>`
-    pub fn generate_id(file_path: &Path, kind: ChunkKind, symbol_name: Option<&str>, start_line: usize) -> String {
+    pub fn generate_id(
+        file_path: &Path,
+        kind: ChunkKind,
+        symbol_name: Option<&str>,
+        start_line: usize,
+    ) -> String {
         let file_str = file_path.to_string_lossy();
         let symbol = symbol_name.unwrap_or("_");
         format!("{}:{}:{}:{}", file_str, kind, symbol, start_line)
@@ -288,7 +301,6 @@ pub struct IndexResult {
     /// Aggregated statistics across all files.
     pub stats: IndexStats,
 }
-
 
 impl IndexResult {
     /// Aggregates per-file parse results and top-level errors into an [`IndexResult`].
@@ -418,12 +430,20 @@ impl IndexState {
     pub fn load(path: &Path) -> crate::AtlasResult<Self> {
         let text = std::fs::read_to_string(path).map_err(|e| {
             crate::AtlasError::io(format!("Failed to read index state: {}", e))
-                .with_context(crate::ErrorContext::default().with_operation("load_state").with_path(path))
+                .with_context(
+                    crate::ErrorContext::default()
+                        .with_operation("load_state")
+                        .with_path(path),
+                )
                 .with_source(e.to_string())
         })?;
         let state: Self = serde_json::from_str(&text).map_err(|e| {
             crate::AtlasError::internal(format!("Failed to parse index state: {}", e))
-                .with_context(crate::ErrorContext::default().with_operation("load_state").with_path(path))
+                .with_context(
+                    crate::ErrorContext::default()
+                        .with_operation("load_state")
+                        .with_path(path),
+                )
                 .with_source(e.to_string())
         })?;
         Ok(state)
@@ -433,19 +453,31 @@ impl IndexState {
     pub fn save(&self, path: &Path) -> crate::AtlasResult<()> {
         let text = serde_json::to_string_pretty(self).map_err(|e| {
             crate::AtlasError::internal(format!("Failed to serialize index state: {}", e))
-                .with_context(crate::ErrorContext::default().with_operation("save_state").with_path(path))
+                .with_context(
+                    crate::ErrorContext::default()
+                        .with_operation("save_state")
+                        .with_path(path),
+                )
                 .with_source(e.to_string())
         })?;
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).map_err(|e| {
                 crate::AtlasError::io(format!("Failed to create state directory: {}", e))
-                    .with_context(crate::ErrorContext::default().with_operation("save_state").with_path(parent))
+                    .with_context(
+                        crate::ErrorContext::default()
+                            .with_operation("save_state")
+                            .with_path(parent),
+                    )
                     .with_source(e.to_string())
             })?;
         }
         std::fs::write(path, text).map_err(|e| {
             crate::AtlasError::io(format!("Failed to write index state: {}", e))
-                .with_context(crate::ErrorContext::default().with_operation("save_state").with_path(path))
+                .with_context(
+                    crate::ErrorContext::default()
+                        .with_operation("save_state")
+                        .with_path(path),
+                )
                 .with_source(e.to_string())
         })?;
         Ok(())
@@ -456,7 +488,9 @@ impl IndexState {
         let key = path.to_string_lossy().to_string();
         match self.file_states.get(&key) {
             Some(prev) => {
-                let dur = mtime.duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
+                let dur = mtime
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default();
                 let secs = dur.as_secs();
                 let nanos = dur.subsec_nanos();
                 prev.mtime_secs != secs || prev.mtime_nanos != nanos || prev.size != size
@@ -466,18 +500,28 @@ impl IndexState {
     }
 
     /// Records the state of a file after successful indexing.
-    pub fn record_file(&mut self, path: &Path, mtime: std::time::SystemTime, size: u64, chunk_count: usize) {
-        let dur = mtime.duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
+    pub fn record_file(
+        &mut self,
+        path: &Path,
+        mtime: std::time::SystemTime,
+        size: u64,
+        chunk_count: usize,
+    ) {
+        let dur = mtime
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default();
         let key = path.to_string_lossy().to_string();
-        self.file_states.insert(key, FileState {
-            mtime_secs: dur.as_secs(),
-            mtime_nanos: dur.subsec_nanos(),
-            size,
-            chunk_count,
-        });
+        self.file_states.insert(
+            key,
+            FileState {
+                mtime_secs: dur.as_secs(),
+                mtime_nanos: dur.subsec_nanos(),
+                size,
+                chunk_count,
+            },
+        );
     }
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -526,10 +570,7 @@ mod tests {
 
     #[test]
     fn from_path_with_directory() {
-        assert_eq!(
-            FileLanguage::from_path(Path::new("src/lib.rs")),
-            FileLanguage::Rust
-        );
+        assert_eq!(FileLanguage::from_path(Path::new("src/lib.rs")), FileLanguage::Rust);
         assert_eq!(
             FileLanguage::from_path(Path::new("project/src/index.js")),
             FileLanguage::JavaScript

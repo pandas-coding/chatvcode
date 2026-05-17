@@ -23,3 +23,5 @@ target
 **/.vscode/
 **/.idea/
 **/.zed/
+**/.ai/
+nul

@@ -198,8 +198,7 @@ pub fn index_path_with_options(
     }
 
     if let Some(ref embedding_opts) = options.embedding {
-        let (embedded, emb_errors, dimension) =
-            run_embedding(&index_result, embedding_opts);
+        let (embedded, emb_errors, dimension) = run_embedding(&index_result, embedding_opts);
         index_result.stats.embedded_chunks = embedded;
         index_result.stats.embedding_errors = emb_errors;
         index_result.stats.embedding_dimension = dimension;
@@ -216,10 +215,7 @@ pub fn index_path_with_options(
     Ok(index_result)
 }
 
-fn run_embedding(
-    index_result: &IndexResult,
-    opts: &EmbeddingOptions,
-) -> (usize, usize, usize) {
+fn run_embedding(index_result: &IndexResult, opts: &EmbeddingOptions) -> (usize, usize, usize) {
     use atlas_vdb::{EmbeddingService, EmbeddingVector, InMemoryVectorStore, VectorStore};
 
     log::info!("Starting embedding generation for {} chunks", index_result.stats.total_chunks);
@@ -274,10 +270,10 @@ fn run_embedding(
     let dimension = embedding_service.dimension();
 
     if embedded > 0 {
-        if let Some(parent) = opts.vector_store_path.parent() {
-            if let Err(e) = std::fs::create_dir_all(parent) {
-                log::warn!("Failed to create vector store directory: {}", e);
-            }
+        if let Some(parent) = opts.vector_store_path.parent()
+            && let Err(e) = std::fs::create_dir_all(parent)
+        {
+            log::warn!("Failed to create vector store directory: {}", e);
         }
         match store.save(&opts.vector_store_path) {
             Ok(()) => {

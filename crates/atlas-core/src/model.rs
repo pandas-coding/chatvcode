@@ -556,6 +556,57 @@ impl IndexState {
     }
 }
 
+/// Options for the semantic search operation.
+#[derive(Debug, Clone)]
+pub struct SearchOptions {
+    /// Configuration for the embedding model.
+    pub embedding_config: atlas_vdb::EmbeddingConfig,
+    /// Path to the vector store file.
+    pub vector_store_path: PathBuf,
+    /// Maximum number of results to return.
+    pub top_k: usize,
+    /// Minimum similarity score threshold (0.0 to 1.0).
+    pub min_score: Option<f32>,
+}
+
+impl SearchOptions {
+    /// Creates `SearchOptions` with the given embedding config and vector store path.
+    pub fn new(
+        embedding_config: atlas_vdb::EmbeddingConfig,
+        vector_store_path: impl Into<PathBuf>,
+    ) -> Self {
+        Self {
+            embedding_config,
+            vector_store_path: vector_store_path.into(),
+            top_k: 10,
+            min_score: None,
+        }
+    }
+
+    /// Sets the maximum number of results to return.
+    pub fn with_top_k(mut self, top_k: usize) -> Self {
+        self.top_k = top_k;
+        self
+    }
+
+    /// Sets the minimum similarity score threshold.
+    pub fn with_min_score(mut self, min_score: f32) -> Self {
+        self.min_score = Some(min_score);
+        self
+    }
+}
+
+/// A single result from a semantic search operation.
+#[derive(Debug, Clone)]
+pub struct SearchResult {
+    /// The unique chunk identifier.
+    pub chunk_id: String,
+    /// Cosine similarity score between the query and this chunk.
+    pub score: f32,
+    /// The code chunk that matched the query.
+    pub chunk: CodeChunk,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

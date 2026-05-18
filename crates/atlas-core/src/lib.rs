@@ -6,7 +6,7 @@ use rayon::prelude::*;
 pub use error::{AtlasError, AtlasResult, ErrorContext, ErrorKind, ErrorSeverity};
 pub use model::{
     ChunkKind, ChunkSpan, CodeChunk, EmbeddingOptions, FileLanguage, FileState, IndexOptions,
-    IndexResult, IndexState, IndexStats, ParseResult, SourceFile,
+    IndexResult, IndexState, IndexStats, ParseResult, SearchOptions, SearchResult, SourceFile,
 };
 pub use scanner::{ScanOptions, ScanResult, Scanner};
 
@@ -297,6 +297,131 @@ fn run_embedding(index_result: &IndexResult, opts: &EmbeddingOptions) -> (usize,
     );
 
     (embedded, emb_errors, dimension)
+}
+
+/// Performs semantic search over indexed code chunks.
+///
+/// Given a query text and search options, this function:
+/// 1. Loads the vector store from disk
+/// 2. Loads the ONNX embedding model
+/// 3. Embeds the query text into a vector
+/// 4. Searches the vector store for the most similar chunks
+/// 5. Re-indexes the project to resolve chunk IDs to `CodeChunk` information
+/// 6. Returns results sorted by similarity score (descending)
+///
+/// Returns an error if the vector store or embedding model cannot be loaded,
+/// or if the query embedding fails.
+pub fn search(
+    query: &str,
+    path: impl Into<PathBuf>,
+    parser: &dyn ParseSource,
+    options: &SearchOptions,
+) -> AtlasResult<Vec<SearchResult>> {
+    use atlas_vdb::{EmbeddingService, VectorStore};
+
+    let path = path.into();
+
+    if !path.exists() {
+        return Err(AtlasError::invalid_input(format!("Path does not exist: {}", path.display())));
+    }
+
+    log::info!("Loading vector store from {}", options.vector_store_path.display());
+
+    let store = atlas_vdb::InMemoryVectorStore::load(&options.vector_store_path).map_err(
+        |e: atlas_vdb::VdbError| {
+            AtlasError::io(format!("Failed to load vector store: {}", e))
+                .with_context(
+                    ErrorContext::default()
+                        .with_operation("search")
+                        .with_path(&options.vector_store_path),
+                )
+                .with_source(e.to_string())
+        },
+    )?;
+
+    if store.is_empty() {
+        log::warn!("Vector store is empty, no results available");
+        return Ok(Vec::new());
+    }
+
+    log::info!("Loaded vector store with {} vectors", store.len());
+
+    log::info!(
+        "Initializing embedding model from {}",
+        options.embedding_config.model_path.display()
+    );
+
+    let embedding_service = atlas_vdb::OnnxEmbeddingService::new(options.embedding_config.clone())
+        .map_err(|e: atlas_vdb::VdbError| {
+            AtlasError::internal(format!("Failed to initialize embedding service: {}", e))
+                .with_context(
+                    ErrorContext::default()
+                        .with_operation("search")
+                        .with_path(&options.embedding_config.model_path),
+                )
+                .with_source(e.to_string())
+        })?;
+
+    log::info!("Embedding query: {:?}", query);
+
+    let query_vectors = embedding_service
+        .embed(&[query])
+        .map_err(|e: atlas_vdb::VdbError| {
+            AtlasError::internal(format!("Failed to embed query: {}", e))
+                .with_context(ErrorContext::default().with_operation("search"))
+                .with_source(e.to_string())
+        })?;
+
+    let query_vector = query_vectors
+        .into_iter()
+        .next()
+        .ok_or_else(|| AtlasError::internal("Embedding service returned no result for query"))?;
+
+    log::info!("Searching for top-{} similar chunks", options.top_k);
+
+    let raw_results = store
+        .search(&query_vector, options.top_k, options.min_score)
+        .map_err(|e: atlas_vdb::VdbError| {
+            AtlasError::internal(format!("Vector store search failed: {}", e))
+                .with_context(ErrorContext::default().with_operation("search"))
+                .with_source(e.to_string())
+        })?;
+
+    if raw_results.is_empty() {
+        log::info!("No results found matching the query");
+        return Ok(Vec::new());
+    }
+
+    log::info!("Found {} candidate results, re-indexing to resolve chunk info", raw_results.len());
+
+    let index_result = index_path(&path, parser)?;
+    let chunk_map: std::collections::HashMap<String, CodeChunk> = index_result
+        .files
+        .iter()
+        .flat_map(|f| f.chunks.iter())
+        .map(|c| (c.id.clone(), c.clone()))
+        .collect();
+
+    let mut results: Vec<SearchResult> = raw_results
+        .into_iter()
+        .filter_map(|(chunk_id, score)| {
+            chunk_map.get(&chunk_id).map(|chunk| SearchResult {
+                chunk_id,
+                score,
+                chunk: chunk.clone(),
+            })
+        })
+        .collect();
+
+    results.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+
+    log::info!("Returning {} search results", results.len());
+
+    Ok(results)
 }
 
 /// Splits a large chunk into smaller pieces by blank-line boundaries.

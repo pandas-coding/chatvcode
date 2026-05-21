@@ -6,7 +6,7 @@ use tokenizers::Tokenizer;
 
 use crate::config::EmbeddingConfig;
 use crate::embedding::EmbeddingService;
-use crate::error::{VdbError, VdbResult};
+use crate::error::{VdbContext, VdbError, VdbResult};
 
 pub struct OnnxEmbeddingService {
     session: Mutex<Session>,
@@ -18,43 +18,75 @@ impl OnnxEmbeddingService {
     pub fn new(config: EmbeddingConfig) -> VdbResult<Self> {
         config.validate()?;
 
+        log::info!("Loading ONNX model from {}", config.model_path.display());
+
         let session = Session::builder()
             .map_err(|e: ort::Error| {
-                VdbError::model_load(format!("Failed to create ONNX session builder: {e}"))
+                VdbError::model_load("Failed to create ONNX session builder")
+                    .with_context(
+                        VdbContext::default()
+                            .with_path(&config.model_path)
+                            .with_operation("model_load"),
+                    )
                     .with_source(e.to_string())
             })?
             .commit_from_file(&config.model_path)
             .map_err(|e: ort::Error| {
-                VdbError::model_load(format!(
-                    "Failed to load ONNX model from {}: {e}",
-                    config.model_path.display()
-                ))
-                .with_source(e.to_string())
+                VdbError::model_load("Failed to load ONNX model from file")
+                    .with_context(
+                        VdbContext::default()
+                            .with_path(&config.model_path)
+                            .with_operation("model_load"),
+                    )
+                    .with_source(e.to_string())
             })?;
 
+        log::info!("ONNX model loaded successfully, dimension={}", config.dimension);
+
         let tokenizer_path = config.tokenizer_path.as_ref().ok_or_else(|| {
-            VdbError::tokenizer_load("Tokenizer path is required but not provided")
+            VdbError::tokenizer_load("Tokenizer path is required but not provided").with_context(
+                VdbContext::default()
+                    .with_path(&config.model_path)
+                    .with_operation("tokenizer_load"),
+            )
         })?;
 
+        log::info!("Loading tokenizer from {}", tokenizer_path.display());
+
         let tokenizer = Tokenizer::from_file(tokenizer_path).map_err(|e| {
-            VdbError::tokenizer_load(format!(
-                "Failed to load tokenizer from {}: {e}",
-                tokenizer_path.display()
-            ))
-            .with_source(e.to_string())
+            VdbError::tokenizer_load("Failed to load tokenizer from file")
+                .with_context(
+                    VdbContext::default()
+                        .with_path(tokenizer_path)
+                        .with_operation("tokenizer_load"),
+                )
+                .with_source(e.to_string())
         })?;
+
+        log::info!("Tokenizer loaded successfully");
 
         Ok(Self { session: Mutex::new(session), tokenizer, config })
     }
 
     fn tokenize(&self, text: &str) -> VdbResult<Vec<i64>> {
         let encoding = self.tokenizer.encode(text, true).map_err(|e| {
-            VdbError::inference(format!("Failed to tokenize text: {e}")).with_source(e.to_string())
+            VdbError::inference("Failed to tokenize text")
+                .with_context(
+                    VdbContext::default()
+                        .with_path(&self.config.model_path)
+                        .with_operation("tokenize"),
+                )
+                .with_source(e.to_string())
         })?;
 
         let mut ids: Vec<i64> = encoding.get_ids().iter().map(|&id| id as i64).collect();
 
         if ids.len() > self.config.max_tokens {
+            log::debug!(
+                "Truncating tokens from {} to {} (max_tokens)",
+                ids.len(),
+                self.config.max_tokens
+            );
             ids.truncate(self.config.max_tokens);
         }
 
@@ -71,31 +103,56 @@ impl OnnxEmbeddingService {
 
         let input_ids_value =
             Value::from_array(([1, seq_len], ids.to_vec())).map_err(|e: ort::Error| {
-                VdbError::inference(format!("Failed to create input_ids tensor: {e}"))
+                VdbError::inference("Failed to create input_ids tensor")
+                    .with_context(
+                        VdbContext::default()
+                            .with_path(&self.config.model_path)
+                            .with_operation("inference"),
+                    )
                     .with_source(e.to_string())
             })?;
 
         let attention_mask_value =
             Value::from_array(([1, seq_len], attention_mask)).map_err(|e: ort::Error| {
-                VdbError::inference(format!("Failed to create attention_mask tensor: {e}"))
+                VdbError::inference("Failed to create attention_mask tensor")
+                    .with_context(
+                        VdbContext::default()
+                            .with_path(&self.config.model_path)
+                            .with_operation("inference"),
+                    )
                     .with_source(e.to_string())
             })?;
 
-        let mut session = self
-            .session
-            .lock()
-            .map_err(|e| VdbError::inference(format!("Failed to lock ONNX session: {e}")))?;
+        let mut session = self.session.lock().map_err(|e| {
+            VdbError::inference("Failed to lock ONNX session")
+                .with_context(
+                    VdbContext::default()
+                        .with_path(&self.config.model_path)
+                        .with_operation("inference"),
+                )
+                .with_source(e.to_string())
+        })?;
         let outputs = session
             .run(ort::inputs![input_ids_value, attention_mask_value])
             .map_err(|e: ort::Error| {
-                VdbError::inference(format!("ONNX inference failed: {e}"))
+                VdbError::inference("ONNX inference failed")
+                    .with_context(
+                        VdbContext::default()
+                            .with_path(&self.config.model_path)
+                            .with_operation("inference"),
+                    )
                     .with_source(e.to_string())
             })?;
 
         let output_tensor = outputs[0]
             .try_extract_tensor::<f32>()
             .map_err(|e: ort::Error| {
-                VdbError::inference(format!("Failed to extract output tensor: {e}"))
+                VdbError::inference("Failed to extract output tensor")
+                    .with_context(
+                        VdbContext::default()
+                            .with_path(&self.config.model_path)
+                            .with_operation("inference"),
+                    )
                     .with_source(e.to_string())
             })?;
 
@@ -103,7 +160,11 @@ impl OnnxEmbeddingService {
         let hidden_size = output_shape.iter().last().copied().unwrap_or(0) as usize;
 
         if hidden_size == 0 {
-            return Err(VdbError::inference("Output tensor has zero hidden size"));
+            return Err(VdbError::inference("Output tensor has zero hidden size").with_context(
+                VdbContext::default()
+                    .with_path(&self.config.model_path)
+                    .with_operation("inference"),
+            ));
         }
 
         let mut embedding = vec![0.0f32; hidden_size];
@@ -128,7 +189,12 @@ impl OnnxEmbeddingService {
                 "Output dimension mismatch: expected {}, got {}",
                 self.config.dimension,
                 embedding.len()
-            )));
+            ))
+            .with_context(
+                VdbContext::default()
+                    .with_path(&self.config.model_path)
+                    .with_operation("inference"),
+            ));
         }
 
         Ok(embedding)

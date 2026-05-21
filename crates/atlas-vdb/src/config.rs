@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-use crate::error::{VdbError, VdbResult};
+use crate::error::{VdbContext, VdbError, VdbResult};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EmbeddingConfig {
@@ -24,27 +24,37 @@ impl EmbeddingConfig {
 
     pub fn validate(&self) -> VdbResult<()> {
         if !self.model_path.exists() {
-            return Err(VdbError::model_load(format!(
-                "Model file not found: {}",
-                self.model_path.display()
-            )));
+            return Err(VdbError::model_load("Model file not found").with_context(
+                VdbContext::default()
+                    .with_path(&self.model_path)
+                    .with_operation("validate"),
+            ));
         }
 
         if self.dimension == 0 {
-            return Err(VdbError::invalid_input("Dimension must be greater than 0"));
+            return Err(VdbError::invalid_input("Dimension must be greater than 0").with_context(
+                VdbContext::default()
+                    .with_path(&self.model_path)
+                    .with_operation("validate"),
+            ));
         }
 
         if self.max_tokens == 0 {
-            return Err(VdbError::invalid_input("Max tokens must be greater than 0"));
+            return Err(VdbError::invalid_input("Max tokens must be greater than 0").with_context(
+                VdbContext::default()
+                    .with_path(&self.model_path)
+                    .with_operation("validate"),
+            ));
         }
 
         if let Some(ref tokenizer_path) = self.tokenizer_path
             && !tokenizer_path.exists()
         {
-            return Err(VdbError::tokenizer_load(format!(
-                "Tokenizer file not found: {}",
-                tokenizer_path.display()
-            )));
+            return Err(VdbError::tokenizer_load("Tokenizer file not found").with_context(
+                VdbContext::default()
+                    .with_path(tokenizer_path)
+                    .with_operation("validate"),
+            ));
         }
 
         Ok(())

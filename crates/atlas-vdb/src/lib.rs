@@ -8,7 +8,7 @@ mod store;
 
 pub use config::EmbeddingConfig;
 pub use embedding::{EmbeddingService, MockEmbeddingService};
-pub use error::{VdbError, VdbResult};
+pub use error::{VdbContext, VdbError, VdbErrorKind, VdbErrorSeverity, VdbResult};
 pub use model::{EmbeddingVector, SearchQuery, SearchResult};
 pub use onnx::OnnxEmbeddingService;
 pub use similarity::{cosine_similarity, dot_product};

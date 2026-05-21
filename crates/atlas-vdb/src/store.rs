@@ -69,7 +69,8 @@ impl VectorStore for InMemoryVectorStore {
                 return Err(VdbError::invalid_input(format!(
                     "Dimension mismatch: expected {}, got {}",
                     self.dimension, vector.dimension
-                )));
+                ))
+                .with_context(VdbContext::default().with_operation("add")));
             }
 
             if vector.vector.len() != vector.dimension {
@@ -77,7 +78,8 @@ impl VectorStore for InMemoryVectorStore {
                     "Vector length {} does not match declared dimension {}",
                     vector.vector.len(),
                     vector.dimension
-                )));
+                ))
+                .with_context(VdbContext::default().with_operation("add")));
             }
 
             if let Some(&existing_idx) = self.index.get(&vector.chunk_id) {
@@ -106,7 +108,8 @@ impl VectorStore for InMemoryVectorStore {
                 "Query dimension mismatch: expected {}, got {}",
                 self.dimension,
                 query.len()
-            )));
+            ))
+            .with_context(VdbContext::default().with_operation("search")));
         }
 
         let query_norm: f32 = query.iter().map(|x| x * x).sum::<f32>().sqrt();
@@ -134,50 +137,68 @@ impl VectorStore for InMemoryVectorStore {
 
     fn save(&self, path: &Path) -> VdbResult<()> {
         let file = std::fs::File::create(path).map_err(|e| {
-            VdbError::io(format!("Failed to create file: {}", path.display()))
+            VdbError::io("Failed to create vector store file")
                 .with_context(VdbContext::default().with_path(path).with_operation("save"))
                 .with_source(e.to_string())
         })?;
 
         let mut writer = BufWriter::new(file);
 
-        writer
-            .write_all(&MAGIC)
-            .map_err(|e| VdbError::io("Failed to write magic bytes").with_source(e.to_string()))?;
+        writer.write_all(&MAGIC).map_err(|e| {
+            VdbError::io("Failed to write magic bytes")
+                .with_context(VdbContext::default().with_path(path).with_operation("save"))
+                .with_source(e.to_string())
+        })?;
 
-        writer
-            .write_all(&VERSION.to_le_bytes())
-            .map_err(|e| VdbError::io("Failed to write version").with_source(e.to_string()))?;
+        writer.write_all(&VERSION.to_le_bytes()).map_err(|e| {
+            VdbError::io("Failed to write version")
+                .with_context(VdbContext::default().with_path(path).with_operation("save"))
+                .with_source(e.to_string())
+        })?;
 
         let count = self.vectors.len() as u32;
-        writer
-            .write_all(&count.to_le_bytes())
-            .map_err(|e| VdbError::io("Failed to write count").with_source(e.to_string()))?;
+        writer.write_all(&count.to_le_bytes()).map_err(|e| {
+            VdbError::io("Failed to write vector count")
+                .with_context(VdbContext::default().with_path(path).with_operation("save"))
+                .with_source(e.to_string())
+        })?;
 
         let dim = self.dimension as u32;
-        writer
-            .write_all(&dim.to_le_bytes())
-            .map_err(|e| VdbError::io("Failed to write dimension").with_source(e.to_string()))?;
+        writer.write_all(&dim.to_le_bytes()).map_err(|e| {
+            VdbError::io("Failed to write dimension")
+                .with_context(VdbContext::default().with_path(path).with_operation("save"))
+                .with_source(e.to_string())
+        })?;
 
         for ev in &self.vectors {
             let chunk_id_bytes = ev.chunk_id.as_bytes();
             let chunk_id_len = chunk_id_bytes.len() as u32;
             writer.write_all(&chunk_id_len.to_le_bytes()).map_err(|e| {
-                VdbError::io("Failed to write chunk_id length").with_source(e.to_string())
+                VdbError::io("Failed to write chunk_id length")
+                    .with_context(VdbContext::default().with_path(path).with_operation("save"))
+                    .with_source(e.to_string())
             })?;
-            writer
-                .write_all(chunk_id_bytes)
-                .map_err(|e| VdbError::io("Failed to write chunk_id").with_source(e.to_string()))?;
+            writer.write_all(chunk_id_bytes).map_err(|e| {
+                VdbError::io("Failed to write chunk_id")
+                    .with_context(VdbContext::default().with_path(path).with_operation("save"))
+                    .with_source(e.to_string())
+            })?;
 
             let vector_bytes: Vec<u8> = ev.vector.iter().flat_map(|f| f.to_le_bytes()).collect();
             writer.write_all(&vector_bytes).map_err(|e| {
-                VdbError::io("Failed to write vector data").with_source(e.to_string())
+                VdbError::io("Failed to write vector data")
+                    .with_context(VdbContext::default().with_path(path).with_operation("save"))
+                    .with_source(e.to_string())
             })?;
         }
 
-        writer
-            .flush()
-            .map_err(|e| VdbError::io("Failed to flush file").with_source(e.to_string()))?;
+        writer.flush().map_err(|e| {
+            VdbError::io("Failed to flush vector store file")
+                .with_context(VdbContext::default().with_path(path).with_operation("save"))
+                .with_source(e.to_string())
+        })?;
+
+        log::info!("Saved vector store with {} vectors to {}", self.vectors.len(), path.display());
 
         Ok(())
     }
@@ -194,12 +215,14 @@ impl VectorStore for InMemoryVectorStore {
 
     fn load(path: &Path) -> VdbResult<Self> {
         if !path.exists() {
-            return Err(VdbError::io(format!("File not found: {}", path.display()))
+            return Err(VdbError::io("Vector store file not found")
                 .with_context(VdbContext::default().with_path(path).with_operation("load")));
         }
 
+        log::info!("Loading vector store from {}", path.display());
+
         let file = std::fs::File::open(path).map_err(|e| {
-            VdbError::io(format!("Failed to open file: {}", path.display()))
+            VdbError::io("Failed to open vector store file")
                 .with_context(VdbContext::default().with_path(path).with_operation("load"))
                 .with_source(e.to_string())
         })?;
@@ -240,7 +263,7 @@ impl VectorStore for InMemoryVectorStore {
 
         let mut count_bytes = [0u8; 4];
         reader.read_exact(&mut count_bytes).map_err(|e| {
-            VdbError::storage("Failed to read count")
+            VdbError::storage("Failed to read vector count")
                 .with_context(VdbContext::default().with_path(path).with_operation("load"))
                 .with_source(e.to_string())
         })?;
@@ -277,8 +300,9 @@ impl VectorStore for InMemoryVectorStore {
             })?;
 
             let chunk_id = String::from_utf8(chunk_id_bytes).map_err(|e| {
-                VdbError::storage(format!("Invalid chunk_id UTF-8: {e}"))
+                VdbError::storage("Invalid chunk_id UTF-8 encoding")
                     .with_context(VdbContext::default().with_path(path).with_operation("load"))
+                    .with_source(e.to_string())
             })?;
 
             let mut vector_bytes = vec![0u8; dimension * 4];
@@ -298,6 +322,12 @@ impl VectorStore for InMemoryVectorStore {
             store.index.insert(chunk_id, idx);
             store.vectors.push(ev);
         }
+
+        log::info!(
+            "Loaded vector store with {} vectors (dimension={})",
+            store.vectors.len(),
+            dimension
+        );
 
         Ok(store)
     }
@@ -516,7 +546,7 @@ mod tests {
         let result = InMemoryVectorStore::load(Path::new("/nonexistent/path/test.vdb"));
         assert!(result.is_err());
         let err = result.unwrap_err();
-        assert!(err.message.contains("File not found"));
+        assert!(err.message.contains("Vector store file not found"));
     }
 
     #[test]

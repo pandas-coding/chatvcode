@@ -2,6 +2,8 @@ use std::collections::HashMap;
 use std::io::{BufReader, BufWriter, Read, Write};
 use std::path::Path;
 
+use rayon::prelude::*;
+
 use crate::error::{VdbContext, VdbError, VdbResult};
 use crate::model::EmbeddingVector;
 use crate::similarity::cosine_similarity;
@@ -9,8 +11,52 @@ use crate::similarity::cosine_similarity;
 const MAGIC: [u8; 4] = *b"ATVS";
 const VERSION: u32 = 1;
 
+/// Trait for vector storage and similarity search.
+///
+/// Implementations store [`EmbeddingVector`]s and support:
+/// - Adding vectors (with upsert by chunk_id)
+/// - Top-k similarity search with optional min_score filtering
+/// - Binary persistence (save/load from disk)
+/// - Lookup by chunk_id
+///
+/// The trait requires `Send + Sync` for thread-safe concurrent use.
+///
+/// # Required methods
+///
+/// - [`add`](VectorStore::add): Insert one or more vectors.
+/// - [`search`](VectorStore::search): Find top-k most similar vectors.
+/// - [`save`](VectorStore::save): Serialize to disk.
+/// - [`load`](VectorStore::load): Deserialize from disk (associated function).
+/// - [`len`](VectorStore::len): Return the number of stored vectors.
+/// - [`clear`](VectorStore::clear): Remove all vectors.
+/// - [`find`](VectorStore::find): Look up a vector by chunk_id.
+///
+/// # Examples
+///
+/// ```
+/// use atlas_vdb::{InMemoryVectorStore, VectorStore, EmbeddingVector};
+///
+/// let mut store = InMemoryVectorStore::new();
+///
+/// // Add vectors
+/// store.add(vec![
+///     EmbeddingVector::new("chunk_a", vec![1.0, 0.0, 0.0]),
+///     EmbeddingVector::new("chunk_b", vec![0.0, 1.0, 0.0]),
+/// ]).unwrap();
+/// assert_eq!(store.len(), 2);
+///
+/// // Search
+/// let results = store.search(&[1.0, 0.0, 0.0], 5, None).unwrap();
+/// assert_eq!(results.len(), 2);
+/// assert!(results[0].1 > results[1].1); // sorted descending
+///
+/// // Lookup
+/// let found = store.find("chunk_a").unwrap();
+/// assert_eq!(found.vector, vec![1.0, 0.0, 0.0]);
+/// ```
 pub trait VectorStore: Send + Sync {
     fn add(&mut self, vectors: Vec<EmbeddingVector>) -> VdbResult<()>;
+    fn remove(&mut self, chunk_ids: &[&str]) -> VdbResult<usize>;
     fn search(
         &self,
         query: &[f32],
@@ -26,9 +72,25 @@ pub trait VectorStore: Send + Sync {
         self.len() == 0
     }
     fn clear(&mut self);
-    fn find(&self, chunk_id: &str) -> Option<&EmbeddingVector>;
+    fn find(&self, chunk_id: &str) -> Option<EmbeddingVector>;
 }
 
+/// An in-memory vector store backed by `Vec<EmbeddingVector>` and a `HashMap` index.
+///
+/// Each vector is stored as a separate [`EmbeddingVector`] struct. A `HashMap`
+/// maps chunk IDs to their position in the vector array for O(1) lookup.
+/// Search uses parallel iteration via `rayon` for computing cosine similarity.
+///
+/// # Examples
+///
+/// ```
+/// use atlas_vdb::InMemoryVectorStore;
+/// use atlas_vdb::VectorStore;
+///
+/// let store = InMemoryVectorStore::new();
+/// assert_eq!(store.len(), 0);
+/// assert!(store.is_empty());
+/// ```
 #[derive(Debug)]
 pub struct InMemoryVectorStore {
     vectors: Vec<EmbeddingVector>,
@@ -37,10 +99,12 @@ pub struct InMemoryVectorStore {
 }
 
 impl InMemoryVectorStore {
+    /// Creates an empty vector store.
     pub fn new() -> Self {
         Self { vectors: Vec::new(), index: HashMap::new(), dimension: 0 }
     }
 
+    /// Creates an empty vector store with pre-allocated capacity.
     pub fn with_capacity(capacity: usize) -> Self {
         Self {
             vectors: Vec::with_capacity(capacity),
@@ -49,6 +113,7 @@ impl InMemoryVectorStore {
         }
     }
 
+    /// Returns the expected dimension of all vectors in this store.
     pub fn dimension(&self) -> usize {
         self.dimension
     }
@@ -121,7 +186,7 @@ impl VectorStore for InMemoryVectorStore {
 
         let mut scores: Vec<(String, f32)> = self
             .vectors
-            .iter()
+            .par_iter()
             .map(|ev| {
                 let score = cosine_similarity(query, &ev.vector);
                 (ev.chunk_id.clone(), score)
@@ -205,6 +270,28 @@ impl VectorStore for InMemoryVectorStore {
 
     fn len(&self) -> usize {
         self.vectors.len()
+    }
+
+    fn remove(&mut self, chunk_ids: &[&str]) -> VdbResult<usize> {
+        let mut removed = 0;
+        let mut indices_to_remove: Vec<usize> = chunk_ids
+            .iter()
+            .filter_map(|&id| self.index.remove(id))
+            .collect();
+        indices_to_remove.sort_unstable();
+        indices_to_remove.reverse();
+        for idx in indices_to_remove {
+            if idx < self.vectors.len() {
+                self.vectors.remove(idx);
+                removed += 1;
+            }
+        }
+        // Rebuild index after removals
+        self.index.clear();
+        for (i, v) in self.vectors.iter().enumerate() {
+            self.index.insert(v.chunk_id.clone(), i);
+        }
+        Ok(removed)
     }
 
     fn clear(&mut self) {
@@ -332,8 +419,407 @@ impl VectorStore for InMemoryVectorStore {
         Ok(store)
     }
 
-    fn find(&self, chunk_id: &str) -> Option<&EmbeddingVector> {
-        self.index.get(chunk_id).map(|&i| &self.vectors[i])
+    fn find(&self, chunk_id: &str) -> Option<EmbeddingVector> {
+        self.index.get(chunk_id).map(|&i| self.vectors[i].clone())
+    }
+}
+
+/// A memory-efficient vector store using contiguous `Vec<f32>` storage.
+///
+/// Unlike [`InMemoryVectorStore`], all vector data is stored in a single
+/// flat `Vec<f32>` with an offsets array for indexing. Individual vectors
+/// are accessed via slices into this contiguous buffer, improving cache
+/// locality and reducing per-vector allocation overhead.
+///
+/// # Examples
+///
+/// ```
+/// use atlas_vdb::{CompactVectorStore, VectorStore, EmbeddingVector};
+///
+/// let mut store = CompactVectorStore::with_capacity(100, 2);
+/// store.add(vec![
+///     EmbeddingVector::new("c1", vec![1.0, 0.0]),
+/// ]).unwrap();
+/// assert_eq!(store.len(), 1);
+/// ```
+#[derive(Debug)]
+pub struct CompactVectorStore {
+    chunk_ids: Vec<String>,
+    vectors: Vec<f32>,   // All vector data stored contiguously
+    offsets: Vec<usize>, // Starting offset (in f32 units) for each vector
+    dimension: usize,
+    index: HashMap<String, usize>, // chunk_id -> index
+}
+
+impl CompactVectorStore {
+    /// Creates an empty compact vector store.
+    pub fn new() -> Self {
+        Self {
+            chunk_ids: Vec::new(),
+            vectors: Vec::new(),
+            offsets: Vec::new(),
+            dimension: 0,
+            index: HashMap::new(),
+        }
+    }
+
+    /// Creates an empty compact vector store with pre-allocated capacity and known dimension.
+    pub fn with_capacity(capacity: usize, dimension: usize) -> Self {
+        Self {
+            chunk_ids: Vec::with_capacity(capacity),
+            vectors: Vec::with_capacity(capacity * dimension),
+            offsets: Vec::with_capacity(capacity),
+            dimension,
+            index: HashMap::with_capacity(capacity),
+        }
+    }
+
+    /// Returns the expected dimension of all vectors in this store.
+    pub fn dimension(&self) -> usize {
+        self.dimension
+    }
+
+    fn get_vector(&self, idx: usize) -> &[f32] {
+        let start = self.offsets[idx];
+        let end = start + self.dimension;
+        &self.vectors[start..end]
+    }
+}
+
+impl Default for CompactVectorStore {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl VectorStore for CompactVectorStore {
+    fn add(&mut self, vectors: Vec<EmbeddingVector>) -> VdbResult<()> {
+        for vector in vectors {
+            if self.dimension == 0 {
+                self.dimension = vector.dimension;
+            } else if vector.dimension != self.dimension {
+                return Err(VdbError::invalid_input(format!(
+                    "Dimension mismatch: expected {}, got {}",
+                    self.dimension, vector.dimension
+                ))
+                .with_context(VdbContext::default().with_operation("add")));
+            }
+
+            if vector.vector.len() != vector.dimension {
+                return Err(VdbError::invalid_input(format!(
+                    "Vector length {} does not match declared dimension {}",
+                    vector.vector.len(),
+                    vector.dimension
+                ))
+                .with_context(VdbContext::default().with_operation("add")));
+            }
+
+            if let Some(&existing_idx) = self.index.get(&vector.chunk_id) {
+                // Update existing vector in-place
+                let start = self.offsets[existing_idx];
+                let end = start + self.dimension;
+                self.vectors[start..end].copy_from_slice(&vector.vector);
+            } else {
+                // Add new vector
+                let idx = self.chunk_ids.len();
+                let offset = self.vectors.len();
+                self.offsets.push(offset);
+                self.vectors.extend_from_slice(&vector.vector);
+                self.chunk_ids.push(vector.chunk_id.clone());
+                self.index.insert(vector.chunk_id, idx);
+            }
+        }
+        Ok(())
+    }
+
+    fn search(
+        &self,
+        query: &[f32],
+        top_k: usize,
+        min_score: Option<f32>,
+    ) -> VdbResult<Vec<(String, f32)>> {
+        if self.chunk_ids.is_empty() || top_k == 0 {
+            return Ok(Vec::new());
+        }
+
+        if query.len() != self.dimension {
+            return Err(VdbError::invalid_input(format!(
+                "Query dimension mismatch: expected {}, got {}",
+                self.dimension,
+                query.len()
+            ))
+            .with_context(VdbContext::default().with_operation("search")));
+        }
+
+        let query_norm: f32 = query.iter().map(|x| x * x).sum::<f32>().sqrt();
+        if query_norm == 0.0 {
+            return Ok(Vec::new());
+        }
+
+        let min = min_score.unwrap_or(f32::NEG_INFINITY);
+
+        let mut scores: Vec<(String, f32)> = (0..self.chunk_ids.len())
+            .into_par_iter()
+            .map(|idx| {
+                let vector = self.get_vector(idx);
+                let score = cosine_similarity(query, vector);
+                (self.chunk_ids[idx].clone(), score)
+            })
+            .filter(|(_, score)| *score >= min)
+            .collect();
+
+        scores.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        scores.truncate(top_k);
+
+        Ok(scores)
+    }
+
+    fn save(&self, path: &Path) -> VdbResult<()> {
+        let file = std::fs::File::create(path).map_err(|e| {
+            VdbError::io("Failed to create vector store file")
+                .with_context(VdbContext::default().with_path(path).with_operation("save"))
+                .with_source(e.to_string())
+        })?;
+
+        let mut writer = BufWriter::new(file);
+
+        writer.write_all(&MAGIC).map_err(|e| {
+            VdbError::io("Failed to write magic bytes")
+                .with_context(VdbContext::default().with_path(path).with_operation("save"))
+                .with_source(e.to_string())
+        })?;
+
+        writer.write_all(&VERSION.to_le_bytes()).map_err(|e| {
+            VdbError::io("Failed to write version")
+                .with_context(VdbContext::default().with_path(path).with_operation("save"))
+                .with_source(e.to_string())
+        })?;
+
+        let count = self.chunk_ids.len() as u32;
+        writer.write_all(&count.to_le_bytes()).map_err(|e| {
+            VdbError::io("Failed to write vector count")
+                .with_context(VdbContext::default().with_path(path).with_operation("save"))
+                .with_source(e.to_string())
+        })?;
+
+        let dim = self.dimension as u32;
+        writer.write_all(&dim.to_le_bytes()).map_err(|e| {
+            VdbError::io("Failed to write dimension")
+                .with_context(VdbContext::default().with_path(path).with_operation("save"))
+                .with_source(e.to_string())
+        })?;
+
+        for idx in 0..self.chunk_ids.len() {
+            let chunk_id = &self.chunk_ids[idx];
+            let chunk_id_bytes = chunk_id.as_bytes();
+            let chunk_id_len = chunk_id_bytes.len() as u32;
+            writer.write_all(&chunk_id_len.to_le_bytes()).map_err(|e| {
+                VdbError::io("Failed to write chunk_id length")
+                    .with_context(VdbContext::default().with_path(path).with_operation("save"))
+                    .with_source(e.to_string())
+            })?;
+            writer.write_all(chunk_id_bytes).map_err(|e| {
+                VdbError::io("Failed to write chunk_id")
+                    .with_context(VdbContext::default().with_path(path).with_operation("save"))
+                    .with_source(e.to_string())
+            })?;
+
+            let vector = self.get_vector(idx);
+            let vector_bytes: Vec<u8> = vector.iter().flat_map(|f| f.to_le_bytes()).collect();
+            writer.write_all(&vector_bytes).map_err(|e| {
+                VdbError::io("Failed to write vector data")
+                    .with_context(VdbContext::default().with_path(path).with_operation("save"))
+                    .with_source(e.to_string())
+            })?;
+        }
+
+        writer.flush().map_err(|e| {
+            VdbError::io("Failed to flush vector store file")
+                .with_context(VdbContext::default().with_path(path).with_operation("save"))
+                .with_source(e.to_string())
+        })?;
+
+        log::info!(
+            "Saved compact vector store with {} vectors to {}",
+            self.chunk_ids.len(),
+            path.display()
+        );
+
+        Ok(())
+    }
+
+    fn len(&self) -> usize {
+        self.chunk_ids.len()
+    }
+
+    fn remove(&mut self, chunk_ids: &[&str]) -> VdbResult<usize> {
+        let to_remove: std::collections::HashSet<&str> = chunk_ids.iter().copied().collect();
+
+        let keep_indices: Vec<usize> = (0..self.chunk_ids.len())
+            .filter(|&i| !to_remove.contains(self.chunk_ids[i].as_str()))
+            .collect();
+
+        let removed = self.chunk_ids.len() - keep_indices.len();
+
+        let new_vectors: Vec<f32> = keep_indices
+            .iter()
+            .flat_map(|&i| {
+                let start = self.offsets[i];
+                let end = start + self.dimension;
+                self.vectors[start..end].to_vec()
+            })
+            .collect();
+
+        let new_chunk_ids: Vec<String> = keep_indices
+            .iter()
+            .map(|&i| self.chunk_ids[i].clone())
+            .collect();
+        let new_offsets: Vec<usize> = (0..keep_indices.len())
+            .map(|i| i * self.dimension)
+            .collect();
+
+        self.vectors = new_vectors;
+        self.chunk_ids = new_chunk_ids;
+        self.offsets = new_offsets;
+        self.index.clear();
+        for (i, id) in self.chunk_ids.iter().enumerate() {
+            self.index.insert(id.clone(), i);
+        }
+
+        Ok(removed)
+    }
+
+    fn clear(&mut self) {
+        self.chunk_ids.clear();
+        self.vectors.clear();
+        self.offsets.clear();
+        self.index.clear();
+        self.dimension = 0;
+    }
+
+    fn load(path: &Path) -> VdbResult<Self> {
+        if !path.exists() {
+            return Err(VdbError::io("Vector store file not found")
+                .with_context(VdbContext::default().with_path(path).with_operation("load")));
+        }
+
+        log::info!("Loading compact vector store from {}", path.display());
+
+        let file = std::fs::File::open(path).map_err(|e| {
+            VdbError::io("Failed to open vector store file")
+                .with_context(VdbContext::default().with_path(path).with_operation("load"))
+                .with_source(e.to_string())
+        })?;
+
+        let mut reader = BufReader::new(file);
+
+        let mut magic = [0u8; 4];
+        reader.read_exact(&mut magic).map_err(|e| {
+            VdbError::storage("Failed to read magic bytes")
+                .with_context(VdbContext::default().with_path(path).with_operation("load"))
+                .with_source(e.to_string())
+        })?;
+
+        if magic != MAGIC {
+            return Err(VdbError::storage(format!(
+                "Invalid file format: expected magic {:?}, got {:?}",
+                std::str::from_utf8(&MAGIC).unwrap_or("????"),
+                std::str::from_utf8(&magic).unwrap_or("????"),
+            ))
+            .with_context(VdbContext::default().with_path(path).with_operation("load")));
+        }
+
+        let mut version_bytes = [0u8; 4];
+        reader.read_exact(&mut version_bytes).map_err(|e| {
+            VdbError::storage("Failed to read version")
+                .with_context(VdbContext::default().with_path(path).with_operation("load"))
+                .with_source(e.to_string())
+        })?;
+        let version = u32::from_le_bytes(version_bytes);
+
+        if version != VERSION {
+            return Err(VdbError::storage(format!(
+                "Unsupported version: expected {}, got {}",
+                VERSION, version
+            ))
+            .with_context(VdbContext::default().with_path(path).with_operation("load")));
+        }
+
+        let mut count_bytes = [0u8; 4];
+        reader.read_exact(&mut count_bytes).map_err(|e| {
+            VdbError::storage("Failed to read vector count")
+                .with_context(VdbContext::default().with_path(path).with_operation("load"))
+                .with_source(e.to_string())
+        })?;
+        let count = u32::from_le_bytes(count_bytes) as usize;
+
+        let mut dim_bytes = [0u8; 4];
+        reader.read_exact(&mut dim_bytes).map_err(|e| {
+            VdbError::storage("Failed to read dimension")
+                .with_context(VdbContext::default().with_path(path).with_operation("load"))
+                .with_source(e.to_string())
+        })?;
+        let dimension = u32::from_le_bytes(dim_bytes) as usize;
+
+        let mut store = CompactVectorStore::with_capacity(count, dimension);
+
+        for _ in 0..count {
+            let mut chunk_id_len_bytes = [0u8; 4];
+            reader.read_exact(&mut chunk_id_len_bytes).map_err(|e| {
+                VdbError::storage("Failed to read chunk_id length")
+                    .with_context(VdbContext::default().with_path(path).with_operation("load"))
+                    .with_source(e.to_string())
+            })?;
+            let chunk_id_len = u32::from_le_bytes(chunk_id_len_bytes) as usize;
+
+            let mut chunk_id_bytes = vec![0u8; chunk_id_len];
+            reader.read_exact(&mut chunk_id_bytes).map_err(|e| {
+                VdbError::storage("Failed to read chunk_id")
+                    .with_context(VdbContext::default().with_path(path).with_operation("load"))
+                    .with_source(e.to_string())
+            })?;
+
+            let chunk_id = String::from_utf8(chunk_id_bytes).map_err(|e| {
+                VdbError::storage("Invalid chunk_id UTF-8 encoding")
+                    .with_context(VdbContext::default().with_path(path).with_operation("load"))
+                    .with_source(e.to_string())
+            })?;
+
+            let mut vector_bytes = vec![0u8; dimension * 4];
+            reader.read_exact(&mut vector_bytes).map_err(|e| {
+                VdbError::storage("Failed to read vector data")
+                    .with_context(VdbContext::default().with_path(path).with_operation("load"))
+                    .with_source(e.to_string())
+            })?;
+
+            let vector: Vec<f32> = vector_bytes
+                .chunks_exact(4)
+                .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
+                .collect();
+
+            // Add to compact store
+            let idx = store.chunk_ids.len();
+            let offset = store.vectors.len();
+            store.offsets.push(offset);
+            store.vectors.extend_from_slice(&vector);
+            store.chunk_ids.push(chunk_id.clone());
+            store.index.insert(chunk_id, idx);
+        }
+
+        log::info!(
+            "Loaded compact vector store with {} vectors (dimension={})",
+            store.chunk_ids.len(),
+            dimension
+        );
+
+        Ok(store)
+    }
+
+    fn find(&self, chunk_id: &str) -> Option<EmbeddingVector> {
+        self.index.get(chunk_id).map(|&idx| {
+            let vector = self.get_vector(idx).to_vec();
+            EmbeddingVector::new(chunk_id, vector)
+        })
     }
 }
 

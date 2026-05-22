@@ -1,15 +1,73 @@
 use crate::error::VdbResult;
 
+/// Trait for text embedding services.
+///
+/// Implementations convert text strings into fixed-dimension floating-point
+/// vectors suitable for similarity search. The trait requires `Send + Sync`
+/// so services can be shared across threads.
+///
+/// # Required methods
+///
+/// - [`embed`](EmbeddingService::embed): Converts a batch of text strings to vectors.
+/// - [`dimension`](EmbeddingService::dimension): Returns the output vector dimension.
+///
+/// # Examples
+///
+/// Implementing a custom embedding service:
+///
+/// ```
+/// use atlas_vdb::EmbeddingService;
+/// use atlas_vdb::VdbResult;
+///
+/// struct MyEmbedder {
+///     dim: usize,
+/// }
+///
+/// impl EmbeddingService for MyEmbedder {
+///     fn embed(&self, texts: &[&str]) -> VdbResult<Vec<Vec<f32>>> {
+///         Ok(texts.iter().map(|_| vec![0.0; self.dim]).collect())
+///     }
+///
+///     fn dimension(&self) -> usize {
+///         self.dim
+///     }
+/// }
+/// ```
 pub trait EmbeddingService: Send + Sync {
+    /// Converts the given text strings into embedding vectors.
+    ///
+    /// The returned vectors are in the same order as the input texts.
     fn embed(&self, texts: &[&str]) -> VdbResult<Vec<Vec<f32>>>;
+    /// Returns the output dimension of the embedding vectors.
     fn dimension(&self) -> usize;
 }
 
+/// A mock embedding service for testing.
+///
+/// Generates deterministic pseudo-embeddings from input text bytes.
+/// Each byte of the input is mapped to a float value in the vector,
+/// and the resulting vector is L2-normalized. Identical inputs always
+/// produce identical outputs.
+///
+/// # Examples
+///
+/// ```
+/// use atlas_vdb::MockEmbeddingService;
+/// use atlas_vdb::EmbeddingService;
+///
+/// let service = MockEmbeddingService::new(64);
+/// assert_eq!(service.dimension(), 64);
+///
+/// let vectors = service.embed(&["hello", "world"]).unwrap();
+/// assert_eq!(vectors.len(), 2);
+/// assert_eq!(vectors[0].len(), 64);
+/// ```
 pub struct MockEmbeddingService {
     dimension: usize,
 }
 
 impl MockEmbeddingService {
+    /// Creates a new mock embedding service with the given output dimension.
     pub fn new(dimension: usize) -> Self {
         Self { dimension }
     }

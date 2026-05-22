@@ -4,10 +4,37 @@ use ort::session::Session;
 use ort::value::Value;
 use tokenizers::Tokenizer;
 
-use crate::config::EmbeddingConfig;
+use crate::config::{EmbeddingConfig, ExecutionProvider};
 use crate::embedding::EmbeddingService;
 use crate::error::{VdbContext, VdbError, VdbResult};
 
+/// An embedding service backed by ONNX Runtime.
+///
+/// Loads an ONNX model and a tokenizer to convert text strings into
+/// embedding vectors via mean-pooling over the output token embeddings.
+///
+/// Uses a [`Mutex`] around the ONNX session to allow sharing across threads.
+///
+/// Supports GPU acceleration via execution providers configured through
+/// [`EmbeddingConfig::with_execution_provider`].
+///
+/// # Examples
+///
+/// ```no_run
+/// use atlas_vdb::{EmbeddingConfig, OnnxEmbeddingService, EmbeddingService, ExecutionProvider};
+///
+/// let config = EmbeddingConfig::new("model.onnx", 384, 512)
+///     .with_tokenizer_path("tokenizer.json");
+///
+/// #[cfg(feature = "cuda")]
+/// let config = config.with_execution_provider(ExecutionProvider::Cuda);
+///
+/// let service = OnnxEmbeddingService::new(config).unwrap();
+///
+/// let vectors = service.embed(&["fn main() {}"]).unwrap();
+/// assert_eq!(vectors.len(), 1);
+/// assert_eq!(vectors[0].len(), 384);
+/// ```
 pub struct OnnxEmbeddingService {
     session: Mutex<Session>,
     tokenizer: Tokenizer,
@@ -15,31 +42,80 @@ pub struct OnnxEmbeddingService {
 }
 
 impl OnnxEmbeddingService {
+    /// Creates a new ONNX embedding service from the given configuration.
+    ///
+    /// Validates the config, loads the ONNX model and tokenizer, and
+    /// initializes the inference session with the configured execution
+    /// provider (CPU by default, GPU if configured).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`VdbErrorKind::ModelLoad`] if the ONNX model fails to load,
+    /// [`VdbErrorKind::TokenizerLoad`] if the tokenizer file is missing or
+    /// fails to load, or [`VdbErrorKind::InvalidInput`] if the config is
+    /// invalid (zero dimension/max_tokens).
     pub fn new(config: EmbeddingConfig) -> VdbResult<Self> {
         config.validate()?;
 
-        log::info!("Loading ONNX model from {}", config.model_path.display());
+        log::info!(
+            "Loading ONNX model from {} (provider: {:?})",
+            config.model_path.display(),
+            config.execution_provider
+        );
 
-        let session = Session::builder()
-            .map_err(|e: ort::Error| {
-                VdbError::model_load("Failed to create ONNX session builder")
-                    .with_context(
-                        VdbContext::default()
-                            .with_path(&config.model_path)
-                            .with_operation("model_load"),
-                    )
-                    .with_source(e.to_string())
-            })?
-            .commit_from_file(&config.model_path)
-            .map_err(|e: ort::Error| {
-                VdbError::model_load("Failed to load ONNX model from file")
-                    .with_context(
-                        VdbContext::default()
-                            .with_path(&config.model_path)
-                            .with_operation("model_load"),
-                    )
-                    .with_source(e.to_string())
-            })?;
+        let mut builder = Session::builder().map_err(|e| {
+            VdbError::model_load("Failed to create ONNX session builder")
+                .with_context(
+                    VdbContext::default()
+                        .with_path(&config.model_path)
+                        .with_operation("model_load"),
+                )
+                .with_source(e.to_string())
+        })?;
+
+        match config.execution_provider {
+            ExecutionProvider::Cuda => {
+                builder = builder
+                    .with_execution_providers([ort::execution_providers::CUDAExecutionProvider::default().build()])
+                    .map_err(|e| {
+                        VdbError::model_load("Failed to configure CUDA execution provider (GPU may not be available)")
+                            .with_context(
+                                VdbContext::default()
+                                    .with_path(&config.model_path)
+                                    .with_operation("model_load"),
+                            )
+                            .with_source(e.to_string())
+                    })?;
+                log::info!("CUDA execution provider configured");
+            }
+            ExecutionProvider::DirectML => {
+                builder = builder
+                    .with_execution_providers([
+                        ort::execution_providers::DirectMLExecutionProvider::default().build(),
+                    ])
+                    .map_err(|e| {
+                        VdbError::model_load("Failed to configure DirectML execution provider")
+                            .with_context(
+                                VdbContext::default()
+                                    .with_path(&config.model_path)
+                                    .with_operation("model_load"),
+                            )
+                            .with_source(e.to_string())
+                    })?;
+                log::info!("DirectML execution provider configured");
+            }
+            _ => {}
+        }
+
+        let session = builder.commit_from_file(&config.model_path).map_err(|e| {
+            VdbError::model_load("Failed to load ONNX model from file")
+                .with_context(
+                    VdbContext::default()
+                        .with_path(&config.model_path)
+                        .with_operation("model_load"),
+                )
+                .with_source(e.to_string())
+        })?;
 
         log::info!("ONNX model loaded successfully, dimension={}", config.dimension);
 

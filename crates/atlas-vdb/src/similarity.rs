@@ -1,3 +1,24 @@
+/// Computes the cosine similarity between two vectors.
+///
+/// Returns a value in the range `[-1.0, 1.0]`. Returns `0.0` if either vector
+/// has zero magnitude. Uses manual 4-way loop unrolling for performance.
+///
+/// # Panics
+///
+/// Panics if `a.len() != b.len()`.
+///
+/// # Examples
+///
+/// ```
+/// use atlas_vdb::cosine_similarity;
+///
+/// let a = vec![1.0, 0.0, 0.0];
+/// let b = vec![1.0, 0.0, 0.0];
+/// assert!((cosine_similarity(&a, &b) - 1.0).abs() < 1e-6);
+///
+/// let c = vec![0.0, 1.0, 0.0];
+/// assert!((cosine_similarity(&a, &c) - 0.0).abs() < 1e-6);
+/// ```
 pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
     assert_eq!(a.len(), b.len(), "Vectors must have the same dimension");
     let dot = dot_product(a, b);
@@ -9,13 +30,55 @@ pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
     dot / (norm_a * norm_b)
 }
 
+/// Computes the dot product (inner product) of two vectors.
+///
+/// Uses manual 4-way loop unrolling for performance.
+///
+/// # Panics
+///
+/// Panics if `a.len() != b.len()`.
+///
+/// # Examples
+///
+/// ```
+/// use atlas_vdb::dot_product;
+///
+/// let a = vec![1.0, 2.0, 3.0];
+/// let b = vec![4.0, 5.0, 6.0];
+/// let result = dot_product(&a, &b);
+/// assert!((result - 32.0).abs() < 1e-6); // 1*4 + 2*5 + 3*6 = 32
+/// ```
+#[inline]
 pub fn dot_product(a: &[f32], b: &[f32]) -> f32 {
     assert_eq!(a.len(), b.len(), "Vectors must have the same dimension");
-    a.iter().zip(b.iter()).map(|(x, y)| x * y).sum()
+    let mut sum = 0.0f32;
+    let mut i = 0;
+    let len = a.len();
+    while i + 4 <= len {
+        sum += a[i] * b[i] + a[i + 1] * b[i + 1] + a[i + 2] * b[i + 2] + a[i + 3] * b[i + 3];
+        i += 4;
+    }
+    while i < len {
+        sum += a[i] * b[i];
+        i += 1;
+    }
+    sum
 }
 
+#[inline]
 fn l2_norm(v: &[f32]) -> f32 {
-    v.iter().map(|x| x * x).sum::<f32>().sqrt()
+    let mut sum = 0.0f32;
+    let mut i = 0;
+    let len = v.len();
+    while i + 4 <= len {
+        sum += v[i] * v[i] + v[i + 1] * v[i + 1] + v[i + 2] * v[i + 2] + v[i + 3] * v[i + 3];
+        i += 4;
+    }
+    while i < len {
+        sum += v[i] * v[i];
+        i += 1;
+    }
+    sum.sqrt()
 }
 
 #[cfg(test)]

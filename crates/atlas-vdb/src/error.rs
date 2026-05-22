@@ -1,20 +1,33 @@
 use std::fmt;
 use std::path::PathBuf;
 
+/// Classification of error types in the VDB layer.
+///
+/// Each kind maps to a default severity via [`default_severity`](VdbErrorKind::default_severity).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VdbErrorKind {
+    /// I/O error (e.g., file read/write failure).
     Io,
+    /// Failed to load the ONNX model.
     ModelLoad,
+    /// Failed to load the tokenizer.
     TokenizerLoad,
+    /// Error during model inference.
     Inference,
+    /// Invalid input (e.g., dimension mismatch, empty text).
     InvalidInput,
+    /// Vector storage error (e.g., file format mismatch).
     Storage,
+    /// Serialization or deserialization error.
     Serialization,
 }
 
+/// Error severity indicating whether the error is recoverable.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VdbErrorSeverity {
+    /// The operation can continue despite this error (e.g., per-chunk inference failure).
     Recoverable,
+    /// The operation cannot continue (e.g., model file missing).
     Unrecoverable,
 }
 
@@ -41,6 +54,10 @@ impl VdbErrorKind {
     }
 }
 
+/// Contextual information attached to a [`VdbError`].
+///
+/// Stores the file path and operation name where the error occurred,
+/// which is included in the error's display output.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct VdbContext {
     pub path: Option<PathBuf>,
@@ -59,16 +76,44 @@ impl VdbContext {
     }
 }
 
+/// A structured error type for the VDB layer.
+///
+/// Includes error kind, message, context (path + operation), source chain,
+/// and severity. Use the convenience constructors (`model_load`, `inference`,
+/// etc.) or the builder pattern (`with_context`, `with_source`, `with_severity`)
+/// to construct errors.
+///
+/// # Examples
+///
+/// ```
+/// use atlas_vdb::{VdbError, VdbErrorKind, VdbContext};
+///
+/// let err = VdbError::model_load("Model file not found")
+///     .with_context(
+///         VdbContext::default()
+///             .with_path("model.onnx")
+///             .with_operation("model_load"),
+///     );
+///
+/// assert_eq!(err.kind, VdbErrorKind::ModelLoad);
+/// assert!(!err.is_recoverable());
+/// ```
 #[derive(Debug, Clone)]
 pub struct VdbError {
+    /// The classification of this error.
     pub kind: VdbErrorKind,
+    /// A human-readable error message.
     pub message: String,
+    /// Contextual information (path, operation) where the error occurred.
     pub context: VdbContext,
+    /// Optional source/cause description.
     pub source: Option<String>,
+    /// Whether the error is recoverable or unrecoverable.
     pub severity: VdbErrorSeverity,
 }
 
 impl VdbError {
+    /// Creates a new error with the given kind and message. Severity is derived from the kind.
     pub fn new(kind: VdbErrorKind, message: impl Into<String>) -> Self {
         let severity = kind.default_severity();
         Self {
@@ -80,21 +125,25 @@ impl VdbError {
         }
     }
 
+    /// Attaches context (path and operation) to this error.
     pub fn with_context(mut self, context: VdbContext) -> Self {
         self.context = context;
         self
     }
 
+    /// Attaches a source/cause description to this error.
     pub fn with_source(mut self, source: impl Into<String>) -> Self {
         self.source = Some(source.into());
         self
     }
 
+    /// Overrides the default severity for this error.
     pub fn with_severity(mut self, severity: VdbErrorSeverity) -> Self {
         self.severity = severity;
         self
     }
 
+    /// Returns `true` if this error is recoverable (operation may continue).
     pub fn is_recoverable(&self) -> bool {
         self.severity == VdbErrorSeverity::Recoverable
     }
@@ -160,4 +209,5 @@ impl From<std::io::Error> for VdbError {
     }
 }
 
+/// Convenience type alias for `Result<T, VdbError>`.
 pub type VdbResult<T> = Result<T, VdbError>;

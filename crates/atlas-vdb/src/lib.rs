@@ -1,15 +1,25 @@
+mod cache;
 mod config;
+mod download;
 mod embedding;
 mod error;
+mod hnsw;
 mod model;
 mod onnx;
+mod quantization;
+mod registry;
 mod similarity;
 mod store;
 
-pub use config::EmbeddingConfig;
+pub use cache::{CachedSearchResult, SearchCache, cached_search};
+pub use config::{EmbeddingConfig, ExecutionProvider};
+pub use download::ModelDownloader;
 pub use embedding::{EmbeddingService, MockEmbeddingService};
 pub use error::{VdbContext, VdbError, VdbErrorKind, VdbErrorSeverity, VdbResult};
+pub use hnsw::HnswVectorStore;
 pub use model::{EmbeddingVector, SearchQuery, SearchResult};
 pub use onnx::OnnxEmbeddingService;
+pub use quantization::QuantizedVectorStore;
+pub use registry::{ModelInfo, ModelRegistry, builtin_model_names, builtin_models};
 pub use similarity::{cosine_similarity, dot_product};
-pub use store::{InMemoryVectorStore, VectorStore};
+pub use store::{CompactVectorStore, InMemoryVectorStore, VectorStore};

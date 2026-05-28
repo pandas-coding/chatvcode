@@ -1,5 +1,6 @@
-use atlas_core::index_path;
-use atlas_parser::parse_source;
+use atlas_core::{
+    AtlasResult, ChunkKind, ChunkSpan, CodeChunk, ParseResult, SourceFile, index_path,
+};
 use clap::Parser;
 use std::path::PathBuf;
 
@@ -10,10 +11,36 @@ struct Args {
     path: PathBuf,
 }
 
+fn example_parse_source(source_file: SourceFile) -> AtlasResult<ParseResult> {
+    if source_file.source_text.trim().is_empty() {
+        return Ok(ParseResult::success(source_file, Vec::new()));
+    }
+
+    let end_line = source_file.source_text.lines().count().saturating_sub(1);
+    let symbol_name = source_file
+        .path
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .map(str::to_owned);
+    let chunk = CodeChunk {
+        id: CodeChunk::generate_id(&source_file.path, ChunkKind::Module, symbol_name.as_deref(), 0),
+        file_path: source_file.path.clone(),
+        language: source_file.language,
+        kind: ChunkKind::Module,
+        symbol_name,
+        span: ChunkSpan::new(0, source_file.source_text.len(), 0, end_line),
+        source_text: source_file.source_text.clone(),
+    };
+
+    Ok(ParseResult::success(source_file, vec![chunk]))
+}
+
 fn main() {
     let cli = Args::parse();
 
-    match index_path(&cli.path, &parse_source) {
+    // `atlas-core` stays parser-agnostic on purpose, so the example injects
+    // a tiny parser instead of depending on `atlas-parser` and creating a cycle.
+    match index_path(&cli.path, &example_parse_source) {
         Ok(result) => {
             println!("Index result for: {}", cli.path.display());
             println!(

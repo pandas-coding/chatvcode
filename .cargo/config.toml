@@ -4,3 +4,10 @@ rustflags = ["-C", "target-feature=-crt-static"]
 [env]
 CFLAGS = { value = "/MD", force = true }
 CXXFLAGS = { value = "/MD", force = true }
+
+# GPU acceleration config, commented to improve building time.
+# Uncomment to enable GPU acceleration:
+# LLAMA_VULKAN = "1"
+# LLAMA_CUDA = "1"
+# LLAMA_CUDA_ARCH = "86"
+

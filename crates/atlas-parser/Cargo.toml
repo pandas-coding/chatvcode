@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dev-dependencies]
+atlas-vdb = { path = "../atlas-vdb" }
 tempfile = "3"
 
 [dependencies]

@@ -1,13 +1,19 @@
+//! Example: End-to-end embedding + search tests using atlas_parser + atlas_core.
+//!
+//! This example exercises the full embedding pipeline with real tree-sitter
+//! parsing, moved here from `atlas-core/tests/embedding.rs` to break the cyclic
+//! dev-dependency between atlas-core and atlas-parser.
+//!
+//! Run: `cargo run --example embedding_core`
+
 use atlas_core::{CodeChunk, IndexResult, SearchOptions, index_path, search_with_service};
+use atlas_parser::parse_source;
 use atlas_vdb::{
     EmbeddingConfig, EmbeddingService, EmbeddingVector, InMemoryVectorStore, MockEmbeddingService,
     VectorStore, cosine_similarity,
 };
 use std::path::PathBuf;
 use tempfile::TempDir;
-
-mod common;
-use common::mock_parse_source;
 
 fn mock_embedding_config() -> EmbeddingConfig {
     EmbeddingConfig::new(PathBuf::from("/dummy/model.onnx"), 32, 512)
@@ -73,7 +79,62 @@ fn run_embedding_with_mock(
     (embedded, emb_errors, dimension)
 }
 
-#[test]
+fn main() {
+    println!("=== embedding_core: End-to-end embedding + search tests ===\n");
+
+    let mut passed = 0usize;
+    let mut failed = 0usize;
+
+    macro_rules! test {
+        ($name:ident) => {
+            print!("  {} ... ", stringify!($name));
+            match std::panic::catch_unwind(|| $name()) {
+                Ok(_) => {
+                    println!("OK");
+                    passed += 1;
+                }
+                Err(e) => {
+                    let msg = e
+                        .downcast_ref::<String>()
+                        .map(|s| s.clone())
+                        .or_else(|| e.downcast_ref::<&str>().map(|s| s.to_string()))
+                        .unwrap_or_else(|| "unknown panic".to_string());
+                    println!("FAILED: {msg}");
+                    failed += 1;
+                }
+            }
+        };
+    }
+
+    test!(test_embedding_output_dimension);
+    test!(test_embedding_consistency_same_input);
+    test!(test_embedding_consistency_across_calls);
+    test!(test_embedding_consistency_different_inputs_differ);
+    test!(test_vector_store_write_and_read);
+    test!(test_vector_store_persistence_and_reload);
+    test!(test_cosine_similarity_correctness);
+    test!(test_cosine_similarity_symmetry);
+    test!(test_cosine_similarity_scale_invariant);
+    test!(test_top_k_search_correctness);
+    test!(test_top_k_search_with_min_score);
+    test!(test_end_to_end_index_with_embedding);
+    test!(test_end_to_end_index_without_embedding_unchanged);
+    test!(test_end_to_end_semantic_search);
+    test!(test_end_to_end_semantic_search_with_top_k_limit);
+    test!(test_end_to_end_search_empty_vector_store);
+    test!(test_end_to_end_search_nonexistent_vector_store);
+    test!(test_embedding_batch_size_respected);
+    test!(test_embedding_with_no_chunks);
+
+    println!("\n=== Results: {passed} passed, {failed} failed ===");
+    if failed > 0 {
+        std::process::exit(1);
+    }
+}
+
+// --- Test functions (copied from atlas-core/tests/embedding.rs) ---
+
+#[allow(non_snake_case)]
 fn test_embedding_output_dimension() {
     for dim in [8, 16, 32, 64, 128] {
         let service = MockEmbeddingService::new(dim);
@@ -84,7 +145,7 @@ fn test_embedding_output_dimension() {
     }
 }
 
-#[test]
+#[allow(non_snake_case)]
 fn test_embedding_consistency_same_input() {
     let service = MockEmbeddingService::new(32);
     let r1 = service.embed(&["hello world"]).unwrap();
@@ -92,7 +153,7 @@ fn test_embedding_consistency_same_input() {
     assert_eq!(r1, r2);
 }
 
-#[test]
+#[allow(non_snake_case)]
 fn test_embedding_consistency_across_calls() {
     let service = MockEmbeddingService::new(32);
     let single = service.embed(&["alpha"]).unwrap()[0].clone();
@@ -100,7 +161,7 @@ fn test_embedding_consistency_across_calls() {
     assert_eq!(single, batch[0]);
 }
 
-#[test]
+#[allow(non_snake_case)]
 fn test_embedding_consistency_different_inputs_differ() {
     let service = MockEmbeddingService::new(32);
     let r1 = service.embed(&["hello"]).unwrap();
@@ -108,7 +169,7 @@ fn test_embedding_consistency_different_inputs_differ() {
     assert_ne!(r1[0], r2[0]);
 }
 
-#[test]
+#[allow(non_snake_case)]
 fn test_vector_store_write_and_read() {
     let service = MockEmbeddingService::new(32);
     let texts = vec!["fn main() { }", "pub fn hello() { }", "fn helper() { }"];
@@ -131,7 +192,7 @@ fn test_vector_store_write_and_read() {
     }
 }
 
-#[test]
+#[allow(non_snake_case)]
 fn test_vector_store_persistence_and_reload() {
     let tmp = TempDir::new().unwrap();
     let path = tmp.path().join("test.vdb");
@@ -160,7 +221,7 @@ fn test_vector_store_persistence_and_reload() {
     }
 }
 
-#[test]
+#[allow(non_snake_case)]
 fn test_cosine_similarity_correctness() {
     let identical = vec![1.0, 0.0, 0.0];
     assert!((cosine_similarity(&identical, &identical) - 1.0).abs() < 1e-6);
@@ -173,7 +234,7 @@ fn test_cosine_similarity_correctness() {
     assert!((cosine_similarity(&a, &c) - (-1.0)).abs() < 1e-6);
 }
 
-#[test]
+#[allow(non_snake_case)]
 fn test_cosine_similarity_symmetry() {
     let pairs = vec![
         (vec![1.0, 2.0, 3.0], vec![4.0, 5.0, 6.0]),
@@ -188,7 +249,7 @@ fn test_cosine_similarity_symmetry() {
     }
 }
 
-#[test]
+#[allow(non_snake_case)]
 fn test_cosine_similarity_scale_invariant() {
     let a = vec![1.0, 2.0, 3.0];
     let b = vec![4.0, 5.0, 6.0];
@@ -198,7 +259,7 @@ fn test_cosine_similarity_scale_invariant() {
     assert!((s1 - s2).abs() < 1e-6, "Scaling should not affect cosine similarity");
 }
 
-#[test]
+#[allow(non_snake_case)]
 fn test_top_k_search_correctness() {
     let service = MockEmbeddingService::new(32);
     let texts = vec!["alpha function", "beta method", "gamma trait"];
@@ -220,7 +281,7 @@ fn test_top_k_search_correctness() {
     assert_eq!(results[0].0, "chunk_0");
 }
 
-#[test]
+#[allow(non_snake_case)]
 fn test_top_k_search_with_min_score() {
     let service = MockEmbeddingService::new(32);
     let texts = vec!["alpha function", "beta method", "gamma trait"];
@@ -245,10 +306,10 @@ fn test_top_k_search_with_min_score() {
     assert!(results.len() <= all_results.len());
 }
 
-#[test]
+#[allow(non_snake_case)]
 fn test_end_to_end_index_with_embedding() {
     let tmp = create_test_project_with_chunks();
-    let index_result = index_path(tmp.path(), &mock_parse_source).unwrap();
+    let index_result = index_path(tmp.path(), &parse_source).unwrap();
 
     let vdb_path = tmp.path().join("vectors.vdb");
     let service = MockEmbeddingService::new(32);
@@ -264,10 +325,10 @@ fn test_end_to_end_index_with_embedding() {
     assert_eq!(loaded.len(), index_result.stats.total_chunks);
 }
 
-#[test]
+#[allow(non_snake_case)]
 fn test_end_to_end_index_without_embedding_unchanged() {
     let tmp = create_test_project_with_chunks();
-    let result = index_path(tmp.path(), &mock_parse_source).unwrap();
+    let result = index_path(tmp.path(), &parse_source).unwrap();
 
     assert_eq!(result.stats.embedded_chunks, 0);
     assert_eq!(result.stats.embedding_errors, 0);
@@ -275,10 +336,10 @@ fn test_end_to_end_index_without_embedding_unchanged() {
     assert!(result.stats.total_chunks > 0);
 }
 
-#[test]
+#[allow(non_snake_case)]
 fn test_end_to_end_semantic_search() {
     let tmp = create_test_project_with_chunks();
-    let index_result = index_path(tmp.path(), &mock_parse_source).unwrap();
+    let index_result = index_path(tmp.path(), &parse_source).unwrap();
 
     let vdb_path = tmp.path().join("vectors.vdb");
     let service = MockEmbeddingService::new(32);
@@ -286,8 +347,7 @@ fn test_end_to_end_semantic_search() {
 
     let search_opts = SearchOptions::new(mock_embedding_config(), &vdb_path);
     let results =
-        search_with_service("fn main", tmp.path(), &mock_parse_source, &search_opts, &service)
-            .unwrap();
+        search_with_service("fn main", tmp.path(), &parse_source, &search_opts, &service).unwrap();
 
     assert!(!results.is_empty());
     for result in &results {
@@ -296,10 +356,10 @@ fn test_end_to_end_semantic_search() {
     }
 }
 
-#[test]
+#[allow(non_snake_case)]
 fn test_end_to_end_semantic_search_with_top_k_limit() {
     let tmp = create_test_project_with_chunks();
-    let index_result = index_path(tmp.path(), &mock_parse_source).unwrap();
+    let index_result = index_path(tmp.path(), &parse_source).unwrap();
 
     let vdb_path = tmp.path().join("vectors.vdb");
     let service = MockEmbeddingService::new(32);
@@ -307,13 +367,12 @@ fn test_end_to_end_semantic_search_with_top_k_limit() {
 
     let search_opts = SearchOptions::new(mock_embedding_config(), &vdb_path).with_top_k(1);
     let results =
-        search_with_service("fn main", tmp.path(), &mock_parse_source, &search_opts, &service)
-            .unwrap();
+        search_with_service("fn main", tmp.path(), &parse_source, &search_opts, &service).unwrap();
 
     assert_eq!(results.len(), 1);
 }
 
-#[test]
+#[allow(non_snake_case)]
 fn test_end_to_end_search_empty_vector_store() {
     let tmp = TempDir::new().unwrap();
     std::fs::write(tmp.path().join("main.rs"), "fn main() { }").unwrap();
@@ -325,12 +384,11 @@ fn test_end_to_end_search_empty_vector_store() {
     let service = MockEmbeddingService::new(32);
     let search_opts = SearchOptions::new(mock_embedding_config(), &vdb_path);
     let results =
-        search_with_service("test", tmp.path(), &mock_parse_source, &search_opts, &service)
-            .unwrap();
+        search_with_service("test", tmp.path(), &parse_source, &search_opts, &service).unwrap();
     assert!(results.is_empty());
 }
 
-#[test]
+#[allow(non_snake_case)]
 fn test_end_to_end_search_nonexistent_vector_store() {
     let tmp = TempDir::new().unwrap();
     std::fs::write(tmp.path().join("main.rs"), "fn main() { }").unwrap();
@@ -338,15 +396,14 @@ fn test_end_to_end_search_nonexistent_vector_store() {
     let vdb_path = tmp.path().join("nonexistent.vdb");
     let service = MockEmbeddingService::new(32);
     let search_opts = SearchOptions::new(mock_embedding_config(), &vdb_path);
-    let result =
-        search_with_service("test", tmp.path(), &mock_parse_source, &search_opts, &service);
+    let result = search_with_service("test", tmp.path(), &parse_source, &search_opts, &service);
     assert!(result.is_err());
 }
 
-#[test]
+#[allow(non_snake_case)]
 fn test_embedding_batch_size_respected() {
     let tmp = create_test_project_with_chunks();
-    let index_result = index_path(tmp.path(), &mock_parse_source).unwrap();
+    let index_result = index_path(tmp.path(), &parse_source).unwrap();
 
     let service = MockEmbeddingService::new(32);
     let total_chunks = index_result.stats.total_chunks;
@@ -365,10 +422,10 @@ fn test_embedding_batch_size_respected() {
     }
 }
 
-#[test]
+#[allow(non_snake_case)]
 fn test_embedding_with_no_chunks() {
     let tmp = TempDir::new().unwrap();
-    let index_result = index_path(tmp.path(), &mock_parse_source).unwrap();
+    let index_result = index_path(tmp.path(), &parse_source).unwrap();
 
     assert_eq!(index_result.stats.total_chunks, 0);
 

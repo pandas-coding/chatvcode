@@ -38,13 +38,19 @@
 pub mod context;
 pub mod error;
 pub mod ffi;
+pub mod gguf;
 pub mod service;
 pub mod types;
 
 // Re-export key types for convenience
 pub use context::{LlamaContext, LlamaModel};
 pub use error::{LlmError, LlmResult};
-pub use service::{LlamaService, LlmService, auto_discover_model, default_model_dir};
+pub use gguf::{
+    GGUF_MAGIC, GgufHeader, GgufMetadata, SUPPORTED_VERSIONS, discover_gguf_models,
+    format_file_size, format_gguf_summary, format_param_count, infer_chat_template, is_gguf_file,
+    load_model_safe, pre_validate_model, read_gguf_metadata, scan_model, validate_gguf,
+};
+pub use service::{LlamaService, LlmService, auto_discover_model, default_model_dir, dedent};
 pub use types::{
     ChatMessage, ChatTemplate, GenerationParams, InferenceResponse, LlmConfig, ModelInfo,
     StopReason, StreamEvent, TokenUsage,

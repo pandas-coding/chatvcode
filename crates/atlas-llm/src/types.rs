@@ -327,6 +327,44 @@ pub enum StreamEvent {
     Error(String),
 }
 
+impl StreamEvent {
+    /// Returns `true` if this is a terminal event (Completed, Cancelled, or Error).
+    #[must_use]
+    pub const fn is_terminal(&self) -> bool {
+        matches!(self, Self::Completed | Self::Cancelled | Self::Error(_))
+    }
+
+    /// Returns `true` if this is a Token event.
+    #[must_use]
+    pub const fn is_token(&self) -> bool {
+        matches!(self, Self::Token(_))
+    }
+
+    /// Extract the token text if this is a Token event.
+    #[must_use]
+    pub fn as_token(&self) -> Option<&str> {
+        match self {
+            Self::Token(text) => Some(text),
+            _ => None,
+        }
+    }
+
+    /// Extract the error message if this is an Error event.
+    #[must_use]
+    pub fn as_error(&self) -> Option<&str> {
+        match self {
+            Self::Error(msg) => Some(msg),
+            _ => None,
+        }
+    }
+
+    /// Returns `true` if this event indicates the generation was successful.
+    #[must_use]
+    pub const fn is_success(&self) -> bool {
+        matches!(self, Self::Started | Self::Token(_) | Self::Completed)
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Inference response
 // ---------------------------------------------------------------------------
@@ -518,5 +556,61 @@ mod tests {
             ChatTemplate::Custom("{{ bos_token }}".into()).custom_template(),
             Some("{{ bos_token }}")
         );
+    }
+
+    #[test]
+    fn test_stream_event_is_terminal() {
+        assert!(!StreamEvent::Started.is_terminal());
+        assert!(!StreamEvent::Token("".into()).is_terminal());
+        assert!(StreamEvent::Completed.is_terminal());
+        assert!(StreamEvent::Cancelled.is_terminal());
+        assert!(StreamEvent::Error("".into()).is_terminal());
+    }
+
+    #[test]
+    fn test_stream_event_is_token() {
+        assert!(!StreamEvent::Started.is_token());
+        assert!(StreamEvent::Token("test".into()).is_token());
+        assert!(!StreamEvent::Completed.is_token());
+        assert!(!StreamEvent::Cancelled.is_token());
+        assert!(!StreamEvent::Error("".into()).is_token());
+    }
+
+    #[test]
+    fn test_stream_event_as_token() {
+        assert_eq!(StreamEvent::Token("hello".into()).as_token(), Some("hello"));
+        assert_eq!(StreamEvent::Started.as_token(), None);
+        assert_eq!(StreamEvent::Completed.as_token(), None);
+        assert_eq!(StreamEvent::Cancelled.as_token(), None);
+        assert_eq!(StreamEvent::Error("".into()).as_token(), None);
+    }
+
+    #[test]
+    fn test_stream_event_as_error() {
+        assert_eq!(StreamEvent::Error("test err".into()).as_error(), Some("test err"));
+        assert_eq!(StreamEvent::Started.as_error(), None);
+        assert_eq!(StreamEvent::Token("".into()).as_error(), None);
+        assert_eq!(StreamEvent::Completed.as_error(), None);
+        assert_eq!(StreamEvent::Cancelled.as_error(), None);
+    }
+
+    #[test]
+    fn test_stream_event_is_success() {
+        assert!(StreamEvent::Started.is_success());
+        assert!(StreamEvent::Token("".into()).is_success());
+        assert!(StreamEvent::Completed.is_success());
+        assert!(!StreamEvent::Cancelled.is_success());
+        assert!(!StreamEvent::Error("".into()).is_success());
+    }
+
+    #[test]
+    fn test_stream_event_equality() {
+        assert_eq!(StreamEvent::Started, StreamEvent::Started);
+        assert_eq!(StreamEvent::Token("a".into()), StreamEvent::Token("a".into()));
+        assert_ne!(StreamEvent::Token("a".into()), StreamEvent::Token("b".into()));
+        assert_eq!(StreamEvent::Completed, StreamEvent::Completed);
+        assert_eq!(StreamEvent::Cancelled, StreamEvent::Cancelled);
+        assert_eq!(StreamEvent::Error("a".into()), StreamEvent::Error("a".into()));
+        assert_ne!(StreamEvent::Started, StreamEvent::Completed);
     }
 }

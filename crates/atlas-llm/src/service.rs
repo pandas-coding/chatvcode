@@ -59,10 +59,23 @@ pub trait LlmService: Send + Sync {
 // Default service implementation using llama.cpp
 // ---------------------------------------------------------------------------
 
+/// Parameters needed to create a new `LlamaContext`.
+///
+/// Stored to allow creating fresh contexts for streaming inference.
+#[derive(Debug, Clone)]
+struct ContextParams {
+    n_ctx: u32,
+    n_batch: u32,
+    n_threads: i32,
+    n_threads_batch: i32,
+}
+
 /// A [`LlmService`] backed by `llama.cpp` via our FFI bindings.
 pub struct LlamaService {
     model: Arc<LlamaModel>,
     context: LlamaContext,
+    /// Parameters used to create the context (for streaming).
+    ctx_params: ContextParams,
     /// Detected chat template name (e.g., "chatml", "llama3").
     chat_template: String,
 }
@@ -150,7 +163,14 @@ impl LlamaService {
 
         log::info!("Using chat template: {chat_template}",);
 
-        Ok(Self { model, context, chat_template })
+        let ctx_params = ContextParams {
+            n_ctx: config.n_ctx,
+            n_batch: config.n_batch,
+            n_threads: config.n_threads,
+            n_threads_batch: config.n_threads_batch,
+        };
+
+        Ok(Self { model, context, ctx_params, chat_template })
     }
 
     /// Initialize with explicit paths for model discovery.
@@ -341,37 +361,69 @@ impl LlmService for LlamaService {
         &self,
         prompt: &str,
         params: &GenerationParams,
-        _cancel_flag: Option<Arc<AtomicBool>>,
+        cancel_flag: Option<Arc<AtomicBool>>,
     ) -> LlmResult<mpsc::Receiver<StreamEvent>> {
         let formatted = self.format_prompt(prompt, &ChatTemplate::Auto, &[])?;
-        let _tokens = self.context.tokenize(&formatted, true)?;
+        let tokens = self.context.tokenize(&formatted, true)?;
 
-        if _tokens.is_empty() {
+        if tokens.is_empty() {
             return Err(LlmError::TokenizeFailed("empty token list".into()));
         }
 
         let (tx, rx) = mpsc::channel();
+        let params = params.clone();
+        let model = self.model.clone();
+        let ctx_params = self.ctx_params.clone();
 
-        let _params = params.clone();
+        // Spawn a dedicated thread for streaming inference.
+        // We create a new context for the streaming thread since LlamaContext
+        // is not Sync (it contains UnsafeCell for the sampler).
+        std::thread::Builder::new()
+            .name("llm-stream".into())
+            .spawn(move || {
+                // Catch panics to avoid undefined behavior
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    // Create a new context for this streaming session
+                    let ctx = match LlamaContext::new(
+                        model,
+                        ctx_params.n_ctx,
+                        ctx_params.n_batch,
+                        ctx_params.n_threads,
+                        ctx_params.n_threads_batch,
+                    ) {
+                        Ok(ctx) => ctx,
+                        Err(e) => {
+                            let _ = tx.send(StreamEvent::Error(format!(
+                                "Failed to create inference context: {e}"
+                            )));
+                            return;
+                        }
+                    };
 
-        // Note: This is a simplified version. In a production implementation,
-        // we would need the context to be Arc-wrapped or use a different pattern.
-        // For now, we use a single-threaded model where the caller spawns the thread.
+                    // Run streaming inference
+                    match ctx.infer_stream(&tokens, &params, tx.clone(), cancel_flag) {
+                        Ok(_usage) => {
+                            // Completed successfully, Completed event already sent
+                        }
+                        Err(e) => {
+                            let _ = tx.send(StreamEvent::Error(format!("Inference error: {e}")));
+                        }
+                    }
+                }));
 
-        std::thread::spawn(move || {
-            // Re-create a minimal context for streaming
-            // In production, this would use a shared context with proper synchronization
-            let _ = tx.send(StreamEvent::Started);
-
-            // For now, fall back to non-streaming
-            unsafe { crate::ffi::llama_backend_init() };
-
-            // This is a placeholder — real streaming requires refactoring
-            let _ = tx.send(StreamEvent::Token(
-                "[Streaming requires shared context — use infer() instead]".to_string(),
-            ));
-            let _ = tx.send(StreamEvent::Completed);
-        });
+                // Handle thread panic
+                if let Err(panic) = result {
+                    let msg = if let Some(s) = panic.downcast_ref::<String>() {
+                        s.clone()
+                    } else if let Some(s) = panic.downcast_ref::<&str>() {
+                        s.to_string()
+                    } else {
+                        "Inference thread panicked".to_string()
+                    };
+                    let _ = tx.send(StreamEvent::Error(msg));
+                }
+            })
+            .map_err(|e| LlmError::Internal(format!("Failed to spawn inference thread: {e}")))?;
 
         Ok(rx)
     }
@@ -744,17 +796,52 @@ impl LlmService for MockLlmService {
     fn infer_stream(
         &self,
         _prompt: &str,
-        _params: &GenerationParams,
-        _cancel_flag: Option<Arc<AtomicBool>>,
+        params: &GenerationParams,
+        cancel_flag: Option<Arc<AtomicBool>>,
     ) -> LlmResult<mpsc::Receiver<StreamEvent>> {
-        // Simple mock: send all text as a single token event
         let (tx, rx) = mpsc::channel();
         let text = self.response_text.clone();
-        std::thread::spawn(move || {
-            let _ = tx.send(StreamEvent::Started);
-            let _ = tx.send(StreamEvent::Token(text));
-            let _ = tx.send(StreamEvent::Completed);
-        });
+        let tokens_per_second = self.tokens_per_second;
+        let max_tokens = params.max_tokens;
+
+        std::thread::Builder::new()
+            .name("mock-stream".into())
+            .spawn(move || {
+                let _ = tx.send(StreamEvent::Started);
+
+                // Split text into words and simulate token-by-token generation
+                let words: Vec<&str> = text.split_whitespace().collect();
+                let token_delay = std::time::Duration::from_secs_f64(1.0 / tokens_per_second);
+
+                for (generated_count, word) in words.into_iter().enumerate() {
+                    // Check cancellation
+                    if let Some(ref flag) = cancel_flag
+                        && flag.load(std::sync::atomic::Ordering::Relaxed)
+                    {
+                        let _ = tx.send(StreamEvent::Cancelled);
+                        return;
+                    }
+
+                    // Check max_tokens
+                    if generated_count as i32 >= max_tokens {
+                        break;
+                    }
+
+                    let token_text =
+                        if generated_count == 0 { word.to_string() } else { format!(" {word}") };
+
+                    if tx.send(StreamEvent::Token(token_text)).is_err() {
+                        // Receiver dropped
+                        return;
+                    }
+
+                    std::thread::sleep(token_delay);
+                }
+
+                let _ = tx.send(StreamEvent::Completed);
+            })
+            .map_err(|e| LlmError::Internal(format!("Failed to spawn stream thread: {e}")))?;
+
         Ok(rx)
     }
 
@@ -895,5 +982,61 @@ mod tests {
     fn test_dedent_no_indent() {
         let input = "Hello\nWorld";
         assert_eq!(dedent(input), input);
+    }
+
+    #[test]
+    fn test_mock_service_infer_stream_basic() {
+        let service = MockLlmService::new("Hello world");
+        let params = GenerationParams::default();
+
+        let rx = service.infer_stream("test", &params, None).unwrap();
+
+        // Collect events
+        let mut events = Vec::new();
+        while let Ok(event) = rx.recv_timeout(std::time::Duration::from_secs(5)) {
+            events.push(event);
+        }
+
+        assert!(!events.is_empty());
+        assert_eq!(events.first(), Some(&StreamEvent::Started));
+        assert_eq!(events.last(), Some(&StreamEvent::Completed));
+
+        // Check tokens
+        let tokens: Vec<&str> = events.iter().filter_map(|e| e.as_token()).collect();
+        assert_eq!(tokens.join(""), "Hello world");
+    }
+
+    #[test]
+    fn test_mock_service_infer_stream_cancelled() {
+        let service = MockLlmService::new("Should be cancelled");
+        let params = GenerationParams::default();
+        let cancel = Arc::new(AtomicBool::new(true));
+
+        let rx = service.infer_stream("test", &params, Some(cancel)).unwrap();
+
+        let mut events = Vec::new();
+        while let Ok(event) = rx.recv_timeout(std::time::Duration::from_secs(5)) {
+            events.push(event);
+        }
+
+        assert_eq!(events.first(), Some(&StreamEvent::Started));
+        assert!(events.contains(&StreamEvent::Cancelled));
+    }
+
+    #[test]
+    fn test_mock_service_infer_stream_max_tokens() {
+        let service = MockLlmService::new("word1 word2 word3 word4 word5");
+        let params = GenerationParams { max_tokens: 2, ..GenerationParams::default() };
+
+        let rx = service.infer_stream("test", &params, None).unwrap();
+
+        let mut token_count = 0;
+        while let Ok(event) = rx.recv_timeout(std::time::Duration::from_secs(5)) {
+            if event.is_token() {
+                token_count += 1;
+            }
+        }
+
+        assert!(token_count <= 2, "Should not exceed max_tokens");
     }
 }

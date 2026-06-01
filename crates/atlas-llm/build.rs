@@ -1,6 +1,7 @@
+#![allow(clippy::too_many_lines)]
 /// Build script for atlas-llm.
 ///
-/// Compiles `llama.cpp` from `third_party/llama.cpp` using CMake and
+/// Compiles `llama.cpp` from `third_party/llama.cpp` using `CMake` and
 /// links the resulting static library into the crate.
 ///
 /// # Build Options
@@ -50,13 +51,12 @@ fn main() {
         .join("third_party")
         .join("llama.cpp");
 
-    if !third_party.exists() {
-        panic!(
-            "llama.cpp source not found at {}. \
-             Please run: git clone --depth 1 https://github.com/ggerganov/llama.cpp.git third_party/llama.cpp",
-            third_party.display()
-        );
-    }
+    assert!(
+        third_party.exists(),
+        "llama.cpp source not found at {}. \
+         Please run: git clone --depth 1 https://github.com/ggerganov/llama.cpp.git third_party/llama.cpp",
+        third_party.display()
+    );
 
     let mut config = cmake::Config::new(&third_party);
 
@@ -103,7 +103,7 @@ fn main() {
             // RTX 3060 = sm_86
             "86".to_string()
         });
-        println!("cargo:warning=Using CUDA architecture: {}", cuda_arch);
+        println!("cargo:warning=Using CUDA architecture: {cuda_arch}");
         config.define("CMAKE_CUDA_ARCHITECTURES", &cuda_arch);
 
         // Suppress a noisy NVCC warning from upstream ggml-cuda template

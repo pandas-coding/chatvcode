@@ -11,10 +11,12 @@ impl ModelDownloader {
         Self { cache_dir: cache_dir.into() }
     }
 
-    pub fn cache_dir(&self) -> &PathBuf {
+    #[must_use]
+    pub const fn cache_dir(&self) -> &PathBuf {
         &self.cache_dir
     }
 
+    #[must_use]
     pub fn is_model_available(&self, model_id: &str) -> bool {
         let model_dir = self.cache_dir.join(model_id);
         model_dir.exists() && model_dir.join("model.onnx").exists()
@@ -47,12 +49,12 @@ impl ModelDownloader {
                 continue;
             }
 
-            log::info!("Downloading {} from {}/{}", file_name, repo_id, file_name);
+            log::info!("Downloading {file_name} from {repo_id}/{file_name}");
 
             let path = repo
                 .get(file_name)
                 .map_err(|e: hf_hub::api::sync::ApiError| {
-                    VdbError::io(format!("Failed to download model file '{}'", file_name))
+                    VdbError::io(format!("Failed to download model file '{file_name}'"))
                         .with_context(VdbContext::default().with_operation("download_model"))
                         .with_source(e.to_string())
                 })?;
@@ -78,7 +80,7 @@ impl ModelDownloader {
     }
 
     pub fn download_sentence_transformer(&self, model_name: &str) -> VdbResult<PathBuf> {
-        let repo_id = format!("sentence-transformers/{}", model_name);
+        let repo_id = format!("sentence-transformers/{model_name}");
         let file_name = format!("models--sentence-transformers--{}", model_name.replace('/', "--"));
 
         let model_dir = self.cache_dir.join(&file_name);
@@ -109,7 +111,7 @@ impl ModelDownloader {
                 continue;
             }
 
-            log::info!("Downloading {} from {}", file_name, repo_id);
+            log::info!("Downloading {file_name} from {repo_id}");
 
             match repo.get(file_name) {
                 Ok(path) => {
@@ -129,15 +131,14 @@ impl ModelDownloader {
                     log::info!("Downloaded {} to {}", file_name, expected_path.display());
                 }
                 Err(e) => {
-                    log::warn!("File '{}' not found in repo '{}': {}", file_name, repo_id, e);
+                    log::warn!("File '{file_name}' not found in repo '{repo_id}': {e}");
                 }
             }
         }
 
         if !model_dir.join("model.onnx").exists() {
             return Err(VdbError::model_load(format!(
-                "Downloaded model '{}' missing model.onnx file",
-                model_name
+                "Downloaded model '{model_name}' missing model.onnx file"
             ))
             .with_context(
                 VdbContext::default()

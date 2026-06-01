@@ -31,6 +31,7 @@ impl FileLanguage {
     /// Maps a file extension string to the corresponding [`FileLanguage`].
     ///
     /// Returns `Unknown` for unrecognized extensions.
+    #[must_use]
     pub fn from_extension(extension: &str) -> Self {
         match extension {
             "rs" => Self::Rust,
@@ -45,7 +46,8 @@ impl FileLanguage {
     }
 
     /// Returns a slice of all supported language variants (excluding `Unknown`).
-    pub fn all_supported() -> &'static [FileLanguage] {
+    #[must_use]
+    pub const fn all_supported() -> &'static [Self] {
         &[
             Self::Rust,
             Self::JavaScript,
@@ -63,17 +65,18 @@ impl FileLanguage {
     pub fn from_path(path: &Path) -> Self {
         path.extension()
             .and_then(|ext| ext.to_str())
-            .map(Self::from_extension)
-            .unwrap_or(Self::Unknown)
+            .map_or(Self::Unknown, Self::from_extension)
     }
 
     /// Returns `true` if this language variant is supported for parsing.
-    pub fn is_supported(self) -> bool {
+    #[must_use]
+    pub const fn is_supported(self) -> bool {
         !matches!(self, Self::Unknown)
     }
 
     /// Returns the lowercase string representation of the language.
-    pub fn as_str(self) -> &'static str {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
         match self {
             Self::Rust => "rust",
             Self::JavaScript => "javascript",
@@ -136,7 +139,13 @@ pub struct ChunkSpan {
 
 impl ChunkSpan {
     /// Creates a new span with the given byte and line ranges.
-    pub fn new(start_byte: usize, end_byte: usize, start_line: usize, end_line: usize) -> Self {
+    #[must_use]
+    pub const fn new(
+        start_byte: usize,
+        end_byte: usize,
+        start_line: usize,
+        end_line: usize,
+    ) -> Self {
         Self { start_byte, end_byte, start_line, end_line }
     }
 }
@@ -221,6 +230,7 @@ impl CodeChunk {
     /// Generates a deterministic unique ID for a chunk.
     ///
     /// Format: `<file_path>:<kind>:<symbol_name>:<start_line>`
+    #[must_use]
     pub fn generate_id(
         file_path: &Path,
         kind: ChunkKind,
@@ -229,7 +239,7 @@ impl CodeChunk {
     ) -> String {
         let file_str = file_path.to_string_lossy();
         let symbol = symbol_name.unwrap_or("_");
-        format!("{}:{}:{}:{}", file_str, kind, symbol, start_line)
+        format!("{file_str}:{kind}:{symbol}:{start_line}")
     }
 }
 
@@ -249,11 +259,13 @@ pub struct ParseResult {
 
 impl ParseResult {
     /// Creates a successful parse result with no errors.
-    pub fn success(file: SourceFile, chunks: Vec<CodeChunk>) -> Self {
+    #[must_use]
+    pub const fn success(file: SourceFile, chunks: Vec<CodeChunk>) -> Self {
         Self { file, chunks, errors: Vec::new() }
     }
 
     /// Attaches parse errors/warnings to this result.
+    #[must_use]
     pub fn with_errors(mut self, errors: Vec<crate::error::AtlasError>) -> Self {
         self.errors = errors;
         self
@@ -313,6 +325,7 @@ impl IndexResult {
     ///
     /// Computes all statistics (file counts, chunk counts, language/kind breakdowns).
     /// Elapsed time must be set separately via [`set_elapsed_ms`](Self::set_elapsed_ms).
+    #[must_use]
     pub fn from_parse_results(
         files: Vec<ParseResult>,
         errors: Vec<crate::error::AtlasError>,
@@ -361,7 +374,7 @@ impl IndexResult {
     }
 
     /// Sets the elapsed time for the indexing operation in milliseconds.
-    pub fn set_elapsed_ms(&mut self, ms: u64) {
+    pub const fn set_elapsed_ms(&mut self, ms: u64) {
         self.stats.elapsed_ms = ms;
     }
 }
@@ -409,7 +422,8 @@ pub struct IndexOptions {
 
 impl IndexOptions {
     /// Creates `IndexOptions` with default values.
-    pub fn new() -> Self {
+    #[must_use]
+    pub const fn new() -> Self {
         Self {
             incremental_state_path: None,
             large_file_threshold: 1024 * 1024,
@@ -455,6 +469,7 @@ impl IndexState {
     pub const CURRENT_VERSION: u32 = 1;
 
     /// Creates an empty state with the current version.
+    #[must_use]
     pub fn new() -> Self {
         Self { version: Self::CURRENT_VERSION, file_states: HashMap::new() }
     }
@@ -462,7 +477,7 @@ impl IndexState {
     /// Loads state from a JSON file.
     pub fn load(path: &Path) -> crate::AtlasResult<Self> {
         let text = std::fs::read_to_string(path).map_err(|e| {
-            crate::AtlasError::io(format!("Failed to read index state: {}", e))
+            crate::AtlasError::io(format!("Failed to read index state: {e}"))
                 .with_context(
                     crate::ErrorContext::default()
                         .with_operation("load_state")
@@ -471,7 +486,7 @@ impl IndexState {
                 .with_source(e.to_string())
         })?;
         let state: Self = serde_json::from_str(&text).map_err(|e| {
-            crate::AtlasError::internal(format!("Failed to parse index state: {}", e))
+            crate::AtlasError::internal(format!("Failed to parse index state: {e}"))
                 .with_context(
                     crate::ErrorContext::default()
                         .with_operation("load_state")
@@ -485,7 +500,7 @@ impl IndexState {
     /// Saves state to a JSON file.
     pub fn save(&self, path: &Path) -> crate::AtlasResult<()> {
         let text = serde_json::to_string_pretty(self).map_err(|e| {
-            crate::AtlasError::internal(format!("Failed to serialize index state: {}", e))
+            crate::AtlasError::internal(format!("Failed to serialize index state: {e}"))
                 .with_context(
                     crate::ErrorContext::default()
                         .with_operation("save_state")
@@ -495,7 +510,7 @@ impl IndexState {
         })?;
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).map_err(|e| {
-                crate::AtlasError::io(format!("Failed to create state directory: {}", e))
+                crate::AtlasError::io(format!("Failed to create state directory: {e}"))
                     .with_context(
                         crate::ErrorContext::default()
                             .with_operation("save_state")
@@ -505,7 +520,7 @@ impl IndexState {
             })?;
         }
         std::fs::write(path, text).map_err(|e| {
-            crate::AtlasError::io(format!("Failed to write index state: {}", e))
+            crate::AtlasError::io(format!("Failed to write index state: {e}"))
                 .with_context(
                     crate::ErrorContext::default()
                         .with_operation("save_state")
@@ -517,6 +532,7 @@ impl IndexState {
     }
 
     /// Checks whether a file has changed since the last index.
+    #[must_use]
     pub fn has_file_changed(&self, path: &Path, mtime: std::time::SystemTime, size: u64) -> bool {
         let key = path.to_string_lossy().to_string();
         match self.file_states.get(&key) {
@@ -584,13 +600,15 @@ impl SearchOptions {
     }
 
     /// Sets the maximum number of results to return.
-    pub fn with_top_k(mut self, top_k: usize) -> Self {
+    #[must_use]
+    pub const fn with_top_k(mut self, top_k: usize) -> Self {
         self.top_k = top_k;
         self
     }
 
     /// Sets the minimum similarity score threshold.
-    pub fn with_min_score(mut self, min_score: f32) -> Self {
+    #[must_use]
+    pub const fn with_min_score(mut self, min_score: f32) -> Self {
         self.min_score = Some(min_score);
         self
     }

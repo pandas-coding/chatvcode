@@ -32,11 +32,13 @@ impl EmbeddingVector {
         Self { chunk_id: chunk_id.into(), vector, dimension }
     }
 
-    pub fn len(&self) -> usize {
+    #[must_use]
+    pub const fn len(&self) -> usize {
         self.dimension
     }
 
-    pub fn is_empty(&self) -> bool {
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
         self.dimension == 0
     }
 }
@@ -69,13 +71,14 @@ pub struct SearchQuery {
 }
 
 impl SearchQuery {
-    /// Creates a new search query with the given text and top_k.
+    /// Creates a new search query with the given text and `top_k`.
     pub fn new(text: impl Into<String>, top_k: usize) -> Self {
         Self { text: text.into(), top_k, min_score: None }
     }
 
     /// Sets the minimum similarity score threshold. Results with scores below this are excluded.
-    pub fn with_min_score(mut self, min_score: f32) -> Self {
+    #[must_use]
+    pub const fn with_min_score(mut self, min_score: f32) -> Self {
         self.min_score = Some(min_score);
         self
     }
@@ -113,6 +116,7 @@ impl SearchResult {
     }
 
     /// Attaches [`CodeChunk`] metadata to this search result.
+    #[must_use]
     pub fn with_chunk(mut self, chunk: CodeChunk) -> Self {
         self.chunk = Some(chunk);
         self

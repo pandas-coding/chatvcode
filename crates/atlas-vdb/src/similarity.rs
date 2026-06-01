@@ -19,6 +19,7 @@
 /// let c = vec![0.0, 1.0, 0.0];
 /// assert!((cosine_similarity(&a, &c) - 0.0).abs() < 1e-6);
 /// ```
+#[must_use]
 pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
     assert_eq!(a.len(), b.len(), "Vectors must have the same dimension");
     let dot = dot_product(a, b);
@@ -49,13 +50,15 @@ pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
 /// assert!((result - 32.0).abs() < 1e-6); // 1*4 + 2*5 + 3*6 = 32
 /// ```
 #[inline]
+#[must_use]
 pub fn dot_product(a: &[f32], b: &[f32]) -> f32 {
     assert_eq!(a.len(), b.len(), "Vectors must have the same dimension");
     let mut sum = 0.0f32;
     let mut i = 0;
     let len = a.len();
     while i + 4 <= len {
-        sum += a[i] * b[i] + a[i + 1] * b[i + 1] + a[i + 2] * b[i + 2] + a[i + 3] * b[i + 3];
+        sum += a[i + 3]
+            .mul_add(b[i + 3], a[i + 2].mul_add(b[i + 2], a[i].mul_add(b[i], a[i + 1] * b[i + 1])));
         i += 4;
     }
     while i < len {
@@ -71,7 +74,8 @@ fn l2_norm(v: &[f32]) -> f32 {
     let mut i = 0;
     let len = v.len();
     while i + 4 <= len {
-        sum += v[i] * v[i] + v[i + 1] * v[i + 1] + v[i + 2] * v[i + 2] + v[i + 3] * v[i + 3];
+        sum += v[i + 3]
+            .mul_add(v[i + 3], v[i + 2].mul_add(v[i + 2], v[i].mul_add(v[i], v[i + 1] * v[i + 1])));
         i += 4;
     }
     while i < len {

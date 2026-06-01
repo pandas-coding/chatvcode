@@ -41,6 +41,7 @@ impl ModelInfo {
     }
 }
 
+#[must_use]
 pub fn builtin_models() -> Vec<ModelInfo> {
     vec![
         ModelInfo::new(
@@ -68,6 +69,7 @@ pub fn builtin_models() -> Vec<ModelInfo> {
     ]
 }
 
+#[must_use]
 pub fn builtin_model_names() -> Vec<&'static str> {
     vec!["all-MiniLM-L6-v2", "all-mpnet-base-v2", "e5-small-v2", "bge-small-en", "gte-small"]
 }
@@ -92,14 +94,17 @@ impl ModelRegistry {
         self.models.insert(info.name.clone(), info);
     }
 
+    #[must_use]
     pub fn list_models(&self) -> Vec<&ModelInfo> {
         self.models.values().collect()
     }
 
+    #[must_use]
     pub fn get_model_info(&self, name: &str) -> Option<&ModelInfo> {
         self.models.get(name)
     }
 
+    #[must_use]
     pub fn build_config(&self, name: &str) -> Option<EmbeddingConfig> {
         let info = self.models.get(name)?;
         let model_dir = self.models_dir.join(&info.name);
@@ -119,7 +124,7 @@ impl ModelRegistry {
         }
 
         let config = self.build_config(name).ok_or_else(|| {
-            crate::VdbError::model_load(format!("Model '{}' not found in registry", name))
+            crate::VdbError::model_load(format!("Model '{name}' not found in registry"))
         })?;
 
         let service: Arc<dyn EmbeddingService> = Arc::new(OnnxEmbeddingService::new(config)?);
@@ -128,11 +133,16 @@ impl ModelRegistry {
         Ok(service)
     }
 
+    #[must_use]
     pub fn loaded_models(&self) -> Vec<&str> {
-        self.loaded_services.keys().map(|s| s.as_str()).collect()
+        self.loaded_services
+            .keys()
+            .map(std::string::String::as_str)
+            .collect()
     }
 
-    pub fn models_dir(&self) -> &PathBuf {
+    #[must_use]
+    pub const fn models_dir(&self) -> &PathBuf {
         &self.models_dir
     }
 }

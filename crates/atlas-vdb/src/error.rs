@@ -41,7 +41,8 @@ impl fmt::Display for VdbErrorSeverity {
 }
 
 impl VdbErrorKind {
-    pub fn default_severity(self) -> VdbErrorSeverity {
+    #[must_use]
+    pub const fn default_severity(self) -> VdbErrorSeverity {
         match self {
             Self::Io => VdbErrorSeverity::Recoverable,
             Self::ModelLoad => VdbErrorSeverity::Unrecoverable,
@@ -70,7 +71,8 @@ impl VdbContext {
         self
     }
 
-    pub fn with_operation(mut self, operation: &'static str) -> Self {
+    #[must_use]
+    pub const fn with_operation(mut self, operation: &'static str) -> Self {
         self.operation = Some(operation);
         self
     }
@@ -126,6 +128,7 @@ impl VdbError {
     }
 
     /// Attaches context (path and operation) to this error.
+    #[must_use]
     pub fn with_context(mut self, context: VdbContext) -> Self {
         self.context = context;
         self
@@ -138,12 +141,14 @@ impl VdbError {
     }
 
     /// Overrides the default severity for this error.
-    pub fn with_severity(mut self, severity: VdbErrorSeverity) -> Self {
+    #[must_use]
+    pub const fn with_severity(mut self, severity: VdbErrorSeverity) -> Self {
         self.severity = severity;
         self
     }
 
     /// Returns `true` if this error is recoverable (operation may continue).
+    #[must_use]
     pub fn is_recoverable(&self) -> bool {
         self.severity == VdbErrorSeverity::Recoverable
     }
@@ -205,7 +210,7 @@ impl std::error::Error for VdbError {
 
 impl From<std::io::Error> for VdbError {
     fn from(value: std::io::Error) -> Self {
-        VdbError::io(value.to_string()).with_source(value.to_string())
+        Self::io(value.to_string()).with_source(value.to_string())
     }
 }
 

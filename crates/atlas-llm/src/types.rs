@@ -68,32 +68,37 @@ impl LlmConfig {
     }
 
     /// Set the context size.
-    pub fn with_n_ctx(mut self, n_ctx: u32) -> Self {
+    #[must_use]
+    pub const fn with_n_ctx(mut self, n_ctx: u32) -> Self {
         self.n_ctx = n_ctx;
         self
     }
 
     /// Set the batch size.
-    pub fn with_n_batch(mut self, n_batch: u32) -> Self {
+    #[must_use]
+    pub const fn with_n_batch(mut self, n_batch: u32) -> Self {
         self.n_batch = n_batch;
         self
     }
 
     /// Set the number of threads.
-    pub fn with_n_threads(mut self, n_threads: i32) -> Self {
+    #[must_use]
+    pub const fn with_n_threads(mut self, n_threads: i32) -> Self {
         self.n_threads = n_threads;
         self.n_threads_batch = n_threads;
         self
     }
 
     /// Set the number of GPU layers to offload.
-    pub fn with_n_gpu_layers(mut self, n_gpu_layers: i32) -> Self {
+    #[must_use]
+    pub const fn with_n_gpu_layers(mut self, n_gpu_layers: i32) -> Self {
         self.n_gpu_layers = n_gpu_layers;
         self
     }
 
     /// Set whether to use mmap.
-    pub fn with_mmap(mut self, use_mmap: bool) -> Self {
+    #[must_use]
+    pub const fn with_mmap(mut self, use_mmap: bool) -> Self {
         self.use_mmap = use_mmap;
         self
     }
@@ -151,7 +156,7 @@ pub struct ModelInfo {
     /// Available chat template name or "none".
     pub chat_template_available: bool,
 
-    /// RoPE type.
+    /// `RoPE` type.
     pub rope_type: String,
 
     /// Whether the model has an encoder (encoder-decoder models).
@@ -214,36 +219,42 @@ impl Default for GenerationParams {
 
 impl GenerationParams {
     /// Create params for greedy decoding (deterministic).
+    #[must_use]
     pub fn greedy() -> Self {
         Self { temperature: 0.0, top_p: 1.0, top_k: 1, min_p: 0.0, ..Self::default() }
     }
 
     /// Set temperature.
-    pub fn with_temperature(mut self, t: f32) -> Self {
+    #[must_use]
+    pub const fn with_temperature(mut self, t: f32) -> Self {
         self.temperature = t;
         self
     }
 
     /// Set top-p.
-    pub fn with_top_p(mut self, p: f32) -> Self {
+    #[must_use]
+    pub const fn with_top_p(mut self, p: f32) -> Self {
         self.top_p = p;
         self
     }
 
     /// Set top-k.
-    pub fn with_top_k(mut self, k: i32) -> Self {
+    #[must_use]
+    pub const fn with_top_k(mut self, k: i32) -> Self {
         self.top_k = k;
         self
     }
 
     /// Set max tokens.
-    pub fn with_max_tokens(mut self, n: i32) -> Self {
+    #[must_use]
+    pub const fn with_max_tokens(mut self, n: i32) -> Self {
         self.max_tokens = n;
         self
     }
 
     /// Set seed.
-    pub fn with_seed(mut self, seed: u32) -> Self {
+    #[must_use]
+    pub const fn with_seed(mut self, seed: u32) -> Self {
         self.seed = seed;
         self
     }
@@ -268,7 +279,8 @@ pub struct TokenUsage {
 
 impl TokenUsage {
     /// Create with prompt and completion counts.
-    pub fn new(prompt_tokens: i32, completion_tokens: i32) -> Self {
+    #[must_use]
+    pub const fn new(prompt_tokens: i32, completion_tokens: i32) -> Self {
         Self { prompt_tokens, completion_tokens, total_tokens: prompt_tokens + completion_tokens }
     }
 }
@@ -297,7 +309,7 @@ pub enum StopReason {
 // ---------------------------------------------------------------------------
 
 /// Events emitted during streaming inference.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StreamEvent {
     /// Generation has started.
     Started,
@@ -384,13 +396,13 @@ impl ChatMessage {
 /// Supported chat template variants.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ChatTemplate {
-    /// Auto-detect from model metadata (falls back to ChatML if not found).
+    /// Auto-detect from model metadata (falls back to `ChatML` if not found).
     Auto,
 
     /// Raw text, no template formatting applied.
     Raw,
 
-    /// ChatML format (used by many models).
+    /// `ChatML` format (used by many models).
     /// Format: `<|im_start|>role\ncontent<|im_end|>\n`
     ChatML,
 
@@ -404,7 +416,8 @@ pub enum ChatTemplate {
 
 impl ChatTemplate {
     /// Returns the template name used for `llama_chat_apply_template`.
-    pub fn template_name(&self) -> Option<&str> {
+    #[must_use]
+    pub const fn template_name(&self) -> Option<&str> {
         match self {
             Self::Auto => None, // use model default
             Self::Raw => Some("raw"),
@@ -415,7 +428,8 @@ impl ChatTemplate {
     }
 
     /// Returns the custom jinja template string, if any.
-    pub fn custom_template(&self) -> Option<&str> {
+    #[must_use]
+    pub const fn custom_template(&self) -> Option<&str> {
         match self {
             Self::Custom(tmpl) => Some(tmpl.as_str()),
             _ => None,

@@ -1,3 +1,28 @@
+#![allow(
+    clippy::missing_errors_doc,
+    clippy::missing_panics_doc,
+    clippy::must_use_candidate,
+    clippy::return_self_not_must_use,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_sign_loss,
+    clippy::cast_precision_loss,
+    clippy::cast_lossless,
+    clippy::ptr_as_ptr,
+    clippy::too_many_lines,
+    clippy::match_same_arms,
+    clippy::option_if_let_else,
+    clippy::single_match_else,
+    clippy::format_push_string,
+    clippy::wildcard_imports,
+    clippy::doc_markdown,
+    clippy::float_cmp,
+    clippy::used_underscore_binding,
+    clippy::needless_pass_by_value,
+    clippy::missing_const_for_fn,
+    clippy::map_unwrap_or,
+    clippy::similar_names
+)]
 //! # atlas-llm
 //!
 //! LLM inference engine using `llama.cpp` FFI bindings.
@@ -50,7 +75,9 @@ pub use gguf::{
     format_file_size, format_gguf_summary, format_param_count, infer_chat_template, is_gguf_file,
     load_model_safe, pre_validate_model, read_gguf_metadata, scan_model, validate_gguf,
 };
-pub use service::{LlamaService, LlmService, auto_discover_model, default_model_dir, dedent};
+pub use service::{
+    LlamaService, LlmService, MockLlmService, auto_discover_model, dedent, default_model_dir,
+};
 pub use types::{
     ChatMessage, ChatTemplate, GenerationParams, InferenceResponse, LlmConfig, ModelInfo,
     StopReason, StreamEvent, TokenUsage,
@@ -79,11 +106,13 @@ pub fn shutdown() {
 }
 
 /// Returns whether llama.cpp reports GPU offload support at runtime.
+#[must_use]
 pub fn supports_gpu_offload() -> bool {
     unsafe { ffi::llama_supports_gpu_offload() }
 }
 
 /// Enumerate registered ggml backends and their visible devices.
+#[must_use]
 pub fn available_backends() -> Vec<BackendInfo> {
     let mut backends = Vec::new();
     let count = unsafe { ffi::ggml_backend_reg_count() };

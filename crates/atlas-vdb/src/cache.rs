@@ -42,6 +42,7 @@ pub struct SearchCache {
 }
 
 impl SearchCache {
+    #[must_use]
     pub fn new(capacity: usize) -> Self {
         let cap = NonZeroUsize::new(capacity.max(1)).unwrap();
         Self { cache: Mutex::new(LruCache::new(cap)) }
@@ -52,7 +53,7 @@ impl SearchCache {
         query.hash(&mut hasher);
         let query_hash = hasher.finish();
 
-        let min_score_bits = min_score.map(|s| s.to_bits() as u64).unwrap_or(u64::MAX);
+        let min_score_bits = min_score.map_or(u64::MAX, |s| u64::from(s.to_bits()));
 
         CacheKey { query_hash, top_k, min_score_bits }
     }
@@ -113,12 +114,12 @@ where
     F: FnOnce() -> VdbResult<Vec<(String, f32)>>,
 {
     if let Some(cached) = cache.get(query, top_k, min_score) {
-        log::debug!("Cache hit for query: {:?}", query);
+        log::debug!("Cache hit for query: {query:?}");
         let results: Vec<(String, f32)> = cached.chunk_ids.into_iter().zip(cached.scores).collect();
         return Ok(results);
     }
 
-    log::debug!("Cache miss for query: {:?}", query);
+    log::debug!("Cache miss for query: {query:?}");
     let results = search_fn()?;
 
     cache.put(

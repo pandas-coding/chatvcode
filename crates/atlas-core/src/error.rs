@@ -43,7 +43,8 @@ impl fmt::Display for ErrorSeverity {
 
 impl ErrorKind {
     /// Returns the default severity for this error kind.
-    pub fn default_severity(self) -> ErrorSeverity {
+    #[must_use]
+    pub const fn default_severity(self) -> ErrorSeverity {
         match self {
             Self::Io => ErrorSeverity::Recoverable,
             Self::UnsupportedLanguage => ErrorSeverity::Recoverable,
@@ -76,13 +77,15 @@ impl ErrorContext {
     }
 
     /// Attaches a language to this context.
-    pub fn with_language(mut self, language: crate::model::FileLanguage) -> Self {
+    #[must_use]
+    pub const fn with_language(mut self, language: crate::model::FileLanguage) -> Self {
         self.language = Some(language);
         self
     }
 
     /// Attaches an operation name to this context.
-    pub fn with_operation(mut self, operation: &'static str) -> Self {
+    #[must_use]
+    pub const fn with_operation(mut self, operation: &'static str) -> Self {
         self.operation = Some(operation);
         self
     }
@@ -123,6 +126,7 @@ impl AtlasError {
     }
 
     /// Attaches contextual metadata to this error.
+    #[must_use]
     pub fn with_context(mut self, context: ErrorContext) -> Self {
         self.context = context;
         self
@@ -135,12 +139,14 @@ impl AtlasError {
     }
 
     /// Overrides the default severity for this error.
-    pub fn with_severity(mut self, severity: ErrorSeverity) -> Self {
+    #[must_use]
+    pub const fn with_severity(mut self, severity: ErrorSeverity) -> Self {
         self.severity = severity;
         self
     }
 
     /// Returns `true` if this error is recoverable (operation can continue).
+    #[must_use]
     pub fn is_recoverable(&self) -> bool {
         self.severity == ErrorSeverity::Recoverable
     }
@@ -204,7 +210,7 @@ impl std::error::Error for AtlasError {
 impl From<std::io::Error> for AtlasError {
     fn from(value: std::io::Error) -> Self {
         let path_context = ErrorContext::default();
-        AtlasError::io(value.to_string())
+        Self::io(value.to_string())
             .with_source(value.to_string())
             .with_context(path_context)
     }

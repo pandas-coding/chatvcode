@@ -68,7 +68,8 @@ pub struct MockEmbeddingService {
 
 impl MockEmbeddingService {
     /// Creates a new mock embedding service with the given output dimension.
-    pub fn new(dimension: usize) -> Self {
+    #[must_use]
+    pub const fn new(dimension: usize) -> Self {
         Self { dimension }
     }
 }
@@ -88,11 +89,11 @@ impl EmbeddingService for MockEmbeddingService {
                     if i >= self.dimension {
                         break;
                     }
-                    vector[i] = (byte as f32) / 255.0;
+                    vector[i] = f32::from(byte) / 255.0;
                 }
                 let norm: f32 = vector.iter().map(|x| x * x).sum::<f32>().sqrt();
                 if norm > 0.0 {
-                    for val in vector.iter_mut() {
+                    for val in &mut vector {
                         *val /= norm;
                     }
                 }

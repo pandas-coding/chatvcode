@@ -59,7 +59,7 @@ enum GgufValueType {
 }
 
 impl GgufValueType {
-    fn from_u32(v: u32) -> Option<Self> {
+    const fn from_u32(v: u32) -> Option<Self> {
         match v {
             0 => Some(Self::U8),
             1 => Some(Self::I8),
@@ -213,6 +213,7 @@ pub fn validate_gguf(path: &Path) -> LlmResult<GgufHeader> {
 }
 
 /// Check if a file appears to be a GGUF file (quick magic-byte check).
+#[must_use]
 pub fn is_gguf_file(path: &Path) -> bool {
     if let Ok(mut file) = fs::File::open(path) {
         let mut magic = [0u8; 4];
@@ -415,6 +416,7 @@ pub fn read_gguf_metadata(path: &Path) -> LlmResult<GgufMetadata> {
 ///
 /// Uses the architecture name and available metadata to recommend
 /// a [`crate::types::ChatTemplate`] variant.
+#[must_use]
 pub fn infer_chat_template(meta: &GgufMetadata) -> Option<String> {
     // If the model already has a chat template in metadata, use it
     if let Some(tmpl) = &meta.chat_template
@@ -466,6 +468,7 @@ pub fn infer_chat_template(meta: &GgufMetadata) -> Option<String> {
 }
 
 /// Format a human-readable summary of GGUF metadata.
+#[must_use]
 pub fn format_gguf_summary(path: &Path, meta: &GgufMetadata) -> String {
     let mut lines = Vec::new();
     lines.push(format!("📄 Model: {}", path.display()));
@@ -511,6 +514,7 @@ pub fn format_gguf_summary(path: &Path, meta: &GgufMetadata) -> String {
 ///
 /// Returns a list of (path, header, metadata) for valid GGUF files.
 /// Invalid files are logged as warnings but do not cause errors.
+#[must_use]
 pub fn discover_gguf_models(
     dir: &Path,
 ) -> Vec<(PathBuf, GgufHeader, Result<GgufMetadata, LlmError>)> {
@@ -610,7 +614,7 @@ pub fn load_model_safe(
                      Place the downloaded .gguf file in ~/.codeatlas/models/ for auto-discovery.",
                     crate::service::default_model_dir().display()
                 );
-                LlmError::ModelNotFound(format!("{}\n\n{}", e, help))
+                LlmError::ModelNotFound(format!("{e}\n\n{help}"))
             }
             LlmError::ModelLoadFailed(msg) if msg.contains("not a valid GGUF") => {
                 LlmError::ModelLoadFailed(format!(
@@ -622,8 +626,7 @@ pub fn load_model_safe(
             }
             LlmError::Unsupported(msg) if msg.contains("GGUF version") => {
                 LlmError::Unsupported(format!(
-                    "{}.\nPlease re-download the model in a supported format or update llama.cpp.",
-                    msg
+                    "{msg}.\nPlease re-download the model in a supported format or update llama.cpp."
                 ))
             }
             _ => e,
@@ -752,7 +755,7 @@ fn read_gguf_string<R: Read>(reader: &mut R) -> std::io::Result<String> {
 }
 
 /// Returns the byte size of a GGUF value type for array skipping.
-fn gguf_value_type_size(vt: u32) -> Option<u64> {
+const fn gguf_value_type_size(vt: u32) -> Option<u64> {
     match vt {
         0 => Some(1),  // u8
         1 => Some(1),  // i8
@@ -771,12 +774,12 @@ fn gguf_value_type_size(vt: u32) -> Option<u64> {
     }
 }
 
-
 // ---------------------------------------------------------------------------
 // Display helpers (shared)
 // ---------------------------------------------------------------------------
 
 /// Format a file size in human-readable format.
+#[must_use]
 pub fn format_file_size(path: &Path) -> String {
     match fs::metadata(path) {
         Ok(meta) => {
@@ -796,6 +799,7 @@ pub fn format_file_size(path: &Path) -> String {
 }
 
 /// Format a parameter count in human-readable form.
+#[must_use]
 pub fn format_param_count(n: u64) -> String {
     if n >= 1_000_000_000 {
         format!("{:.2}B", n as f64 / 1_000_000_000.0)
@@ -1034,15 +1038,16 @@ mod tests {
 
     #[test]
     fn test_infer_chat_template_from_metadata() {
-        let mut meta = GgufMetadata::default();
-        meta.chat_template = Some("custom jinja template".into());
+        let meta = GgufMetadata {
+            chat_template: Some("custom jinja template".into()),
+            ..GgufMetadata::default()
+        };
         assert_eq!(infer_chat_template(&meta), Some("custom jinja template".into()));
     }
 
     #[test]
     fn test_infer_chat_template_llama() {
-        let mut meta = GgufMetadata::default();
-        meta.architecture = Some("llama".into());
+        let meta = GgufMetadata { architecture: Some("llama".into()), ..GgufMetadata::default() };
         assert_eq!(infer_chat_template(&meta), Some("llama3".into()));
     }
 

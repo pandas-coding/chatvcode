@@ -36,19 +36,22 @@ impl ScanOptions {
     }
 
     /// Sets the maximum directory depth to scan.
-    pub fn with_max_depth(mut self, depth: usize) -> Self {
+    #[must_use]
+    pub const fn with_max_depth(mut self, depth: usize) -> Self {
         self.max_depth = Some(depth);
         self
     }
 
     /// Sets the large-file threshold in bytes.
-    pub fn with_large_file_threshold(mut self, threshold: usize) -> Self {
+    #[must_use]
+    pub const fn with_large_file_threshold(mut self, threshold: usize) -> Self {
         self.large_file_threshold = Some(threshold);
         self
     }
 
     /// Sets the maximum lines to read from large files.
-    pub fn with_large_file_max_lines(mut self, max_lines: usize) -> Self {
+    #[must_use]
+    pub const fn with_large_file_max_lines(mut self, max_lines: usize) -> Self {
         self.large_file_max_lines = Some(max_lines);
         self
     }
@@ -67,7 +70,8 @@ pub struct ScanResult {
 
 impl ScanResult {
     /// Creates an empty scan result.
-    pub fn new() -> Self {
+    #[must_use]
+    pub const fn new() -> Self {
         Self { source_files: Vec::new(), skipped_files: Vec::new(), errors: Vec::new() }
     }
 }
@@ -97,6 +101,7 @@ impl Scanner {
     /// tree, applying ignore rules and language detection. When
     /// `respect_gitignore` is enabled, it uses the `ignore` crate's
     /// `WalkBuilder` to honour `.gitignore` patterns.
+    #[must_use]
     pub fn scan(options: &ScanOptions) -> ScanResult {
         let mut result = ScanResult::new();
 
@@ -108,7 +113,7 @@ impl Scanner {
                             .with_operation("scan")
                             .with_path(&options.root),
                     );
-            log::error!("{}", err);
+            log::error!("{err}");
             result.errors.push(err);
             return result;
         }
@@ -182,12 +187,12 @@ impl Scanner {
                     }
                 }
                 Err(e) => {
-                    let err = AtlasError::io(format!("Walk error: {}", e)).with_context(
+                    let err = AtlasError::io(format!("Walk error: {e}")).with_context(
                         ErrorContext::default()
                             .with_operation("scan")
                             .with_path(root),
                     );
-                    log::warn!("{}", err);
+                    log::warn!("{err}");
                     result.errors.push(err);
                 }
             }
@@ -220,7 +225,7 @@ impl Scanner {
                                 .with_path(dir),
                         )
                         .with_source(e.to_string());
-                log::warn!("{}", err);
+                log::warn!("{err}");
                 result.errors.push(err);
                 return;
             }
@@ -238,7 +243,7 @@ impl Scanner {
                                     .with_path(dir),
                             )
                             .with_source(e.to_string());
-                    log::warn!("{}", err);
+                    log::warn!("{err}");
                     result.errors.push(err);
                     continue;
                 }
@@ -258,7 +263,7 @@ impl Scanner {
                             .with_path(&path),
                     )
                     .with_source(e.to_string());
-                    log::warn!("{}", err);
+                    log::warn!("{err}");
                     result.errors.push(err);
                     continue;
                 }
@@ -295,6 +300,7 @@ impl Scanner {
     /// Checks if a file is a source file based on its extension.
     ///
     /// Returns true if the file has a recognized source code extension.
+    #[must_use]
     pub fn is_source_file(path: &Path) -> bool {
         let language = FileLanguage::from_path(path);
         language.is_supported()
@@ -306,6 +312,7 @@ impl Scanner {
     /// - Converting to canonical path when possible
     /// - Resolving `.` and `..` components as a fallback
     /// - Standardizing path separators
+    #[must_use]
     pub fn normalize_path(path: &Path) -> PathBuf {
         // Try to canonicalize the path, but fall back to manual cleanup if it fails
         // (e.g., during testing or for paths that don't exist yet)
@@ -345,11 +352,12 @@ impl Scanner {
         result
     }
 
-    /// Scans a directory and reads all source files into SourceFile objects.
+    /// Scans a directory and reads all source files into `SourceFile` objects.
     ///
     /// This is a convenience method that combines scanning with file reading.
     /// Large files (exceeding the threshold) are partially read based on
     /// `large_file_max_lines`.
+    #[must_use]
     pub fn scan_and_read(options: &ScanOptions) -> Vec<AtlasResult<SourceFile>> {
         let scan_result = Self::scan(options);
 
@@ -361,7 +369,7 @@ impl Scanner {
             .into_par_iter()
             .map(|path| {
                 let metadata = fs::metadata(&path);
-                let file_size = metadata.as_ref().map(|m| m.len()).unwrap_or(0);
+                let file_size = metadata.as_ref().map(std::fs::Metadata::len).unwrap_or(0);
 
                 let is_large = large_threshold > 0 && file_size as usize > large_threshold;
 
@@ -377,7 +385,7 @@ impl Scanner {
                                         .with_path(&path),
                                 )
                                 .with_source(e.to_string());
-                        log::error!("{}", err);
+                        log::error!("{err}");
                         err
                     })?
                 };
@@ -400,7 +408,7 @@ impl Scanner {
                         .with_path(path),
                 )
                 .with_source(e.to_string());
-            log::error!("{}", err);
+            log::error!("{err}");
             err
         })?;
 
@@ -416,7 +424,7 @@ impl Scanner {
                                 .with_path(path),
                         )
                         .with_source(e.to_string());
-                log::error!("{}", err);
+                log::error!("{err}");
                 err
             })?;
             lines.push(line);

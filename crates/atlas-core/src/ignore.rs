@@ -20,6 +20,7 @@ const IGNORED_DIRS: &[&str] = &[
 ///
 /// This function implements the standard ignore rules for common
 /// directories that typically don't contain user source code.
+#[must_use]
 pub fn should_ignore_dir(path: &Path) -> bool {
     if let Some(dir_name) = path.file_name().and_then(|n| n.to_str()) {
         IGNORED_DIRS.contains(&dir_name)
@@ -31,10 +32,10 @@ pub fn should_ignore_dir(path: &Path) -> bool {
 /// Checks if a file should be ignored based on its name/extension.
 ///
 /// Filters out common non-source files like binaries, images, etc.
+#[must_use]
 pub fn should_ignore_file(path: &Path) -> bool {
-    let file_name = match path.file_name().and_then(|n| n.to_str()) {
-        Some(name) => name,
-        None => return true,
+    let Some(file_name) = path.file_name().and_then(|n| n.to_str()) else {
+        return true;
     };
 
     // Skip hidden files (starting with dot)

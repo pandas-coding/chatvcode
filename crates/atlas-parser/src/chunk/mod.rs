@@ -29,6 +29,7 @@ fn chunk_defs_for_language(language: FileLanguage) -> Vec<ChunkDef> {
 /// Walks the tree recursively, matching nodes against language-specific
 /// chunk definitions. Returns early on matched nodes (does not descend
 /// into children of matched chunks).
+#[must_use]
 pub fn extract_chunks(node: &Node, source_file: &SourceFile) -> Vec<CodeChunk> {
     let defs = chunk_defs_for_language(source_file.language);
     let mut chunks = Vec::new();

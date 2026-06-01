@@ -14,10 +14,10 @@ const VERSION: u32 = 1;
 /// Trait for vector storage and similarity search.
 ///
 /// Implementations store [`EmbeddingVector`]s and support:
-/// - Adding vectors (with upsert by chunk_id)
-/// - Top-k similarity search with optional min_score filtering
+/// - Adding vectors (with upsert by `chunk_id`)
+/// - Top-k similarity search with optional `min_score` filtering
 /// - Binary persistence (save/load from disk)
-/// - Lookup by chunk_id
+/// - Lookup by `chunk_id`
 ///
 /// The trait requires `Send + Sync` for thread-safe concurrent use.
 ///
@@ -29,7 +29,7 @@ const VERSION: u32 = 1;
 /// - [`load`](VectorStore::load): Deserialize from disk (associated function).
 /// - [`len`](VectorStore::len): Return the number of stored vectors.
 /// - [`clear`](VectorStore::clear): Remove all vectors.
-/// - [`find`](VectorStore::find): Look up a vector by chunk_id.
+/// - [`find`](VectorStore::find): Look up a vector by `chunk_id`.
 ///
 /// # Examples
 ///
@@ -100,11 +100,13 @@ pub struct InMemoryVectorStore {
 
 impl InMemoryVectorStore {
     /// Creates an empty vector store.
+    #[must_use]
     pub fn new() -> Self {
         Self { vectors: Vec::new(), index: HashMap::new(), dimension: 0 }
     }
 
     /// Creates an empty vector store with pre-allocated capacity.
+    #[must_use]
     pub fn with_capacity(capacity: usize) -> Self {
         Self {
             vectors: Vec::with_capacity(capacity),
@@ -114,7 +116,8 @@ impl InMemoryVectorStore {
     }
 
     /// Returns the expected dimension of all vectors in this store.
-    pub fn dimension(&self) -> usize {
+    #[must_use]
+    pub const fn dimension(&self) -> usize {
         self.dimension
     }
 }
@@ -342,8 +345,7 @@ impl VectorStore for InMemoryVectorStore {
 
         if version != VERSION {
             return Err(VdbError::storage(format!(
-                "Unsupported version: expected {}, got {}",
-                VERSION, version
+                "Unsupported version: expected {VERSION}, got {version}"
             ))
             .with_context(VdbContext::default().with_path(path).with_operation("load")));
         }
@@ -364,7 +366,7 @@ impl VectorStore for InMemoryVectorStore {
         })?;
         let dimension = u32::from_le_bytes(dim_bytes) as usize;
 
-        let mut store = InMemoryVectorStore {
+        let mut store = Self {
             vectors: Vec::with_capacity(count),
             index: HashMap::with_capacity(count),
             dimension,
@@ -453,6 +455,7 @@ pub struct CompactVectorStore {
 
 impl CompactVectorStore {
     /// Creates an empty compact vector store.
+    #[must_use]
     pub fn new() -> Self {
         Self {
             chunk_ids: Vec::new(),
@@ -464,6 +467,7 @@ impl CompactVectorStore {
     }
 
     /// Creates an empty compact vector store with pre-allocated capacity and known dimension.
+    #[must_use]
     pub fn with_capacity(capacity: usize, dimension: usize) -> Self {
         Self {
             chunk_ids: Vec::with_capacity(capacity),
@@ -475,7 +479,8 @@ impl CompactVectorStore {
     }
 
     /// Returns the expected dimension of all vectors in this store.
-    pub fn dimension(&self) -> usize {
+    #[must_use]
+    pub const fn dimension(&self) -> usize {
         self.dimension
     }
 
@@ -739,8 +744,7 @@ impl VectorStore for CompactVectorStore {
 
         if version != VERSION {
             return Err(VdbError::storage(format!(
-                "Unsupported version: expected {}, got {}",
-                VERSION, version
+                "Unsupported version: expected {VERSION}, got {version}"
             ))
             .with_context(VdbContext::default().with_path(path).with_operation("load")));
         }
@@ -761,7 +765,7 @@ impl VectorStore for CompactVectorStore {
         })?;
         let dimension = u32::from_le_bytes(dim_bytes) as usize;
 
-        let mut store = CompactVectorStore::with_capacity(count, dimension);
+        let mut store = Self::with_capacity(count, dimension);
 
         for _ in 0..count {
             let mut chunk_id_len_bytes = [0u8; 4];

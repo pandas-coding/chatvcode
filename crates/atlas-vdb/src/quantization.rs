@@ -42,13 +42,13 @@ impl QuantizationParams {
     }
 
     pub fn quantize(&self, value: f32) -> u8 {
-        ((value / self.scale) + self.zero_point as f32)
+        ((value / self.scale) + f32::from(self.zero_point))
             .round()
             .clamp(0.0, 255.0) as u8
     }
 
     pub fn dequantize(&self, quantized: u8) -> f32 {
-        (quantized as f32 - self.zero_point as f32) * self.scale
+        (f32::from(quantized) - f32::from(self.zero_point)) * self.scale
     }
 }
 
@@ -62,6 +62,7 @@ pub struct QuantizedVectorStore {
 }
 
 impl QuantizedVectorStore {
+    #[must_use]
     pub fn new() -> Self {
         Self {
             chunk_ids: Vec::new(),
@@ -72,15 +73,18 @@ impl QuantizedVectorStore {
         }
     }
 
-    pub fn dimension(&self) -> usize {
+    #[must_use]
+    pub const fn dimension(&self) -> usize {
         self.dimension
     }
 
-    pub fn len(&self) -> usize {
+    #[must_use]
+    pub const fn len(&self) -> usize {
         self.chunk_ids.len()
     }
 
-    pub fn is_empty(&self) -> bool {
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
         self.chunk_ids.is_empty()
     }
 
@@ -128,6 +132,7 @@ impl QuantizedVectorStore {
         Ok(())
     }
 
+    #[must_use]
     pub fn find(&self, chunk_id: &str) -> Option<EmbeddingVector> {
         self.index.get(chunk_id).map(|&idx| {
             let start = idx * self.dimension;
@@ -332,8 +337,7 @@ impl QuantizedVectorStore {
         let version = u32::from_le_bytes(version_bytes);
         if version != QVERSION {
             return Err(VdbError::storage(format!(
-                "Unsupported version: expected {}, got {}",
-                QVERSION, version
+                "Unsupported version: expected {QVERSION}, got {version}"
             ))
             .with_context(VdbContext::default().with_path(path).with_operation("load")));
         }

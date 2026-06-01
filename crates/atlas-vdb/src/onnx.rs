@@ -53,7 +53,7 @@ impl OnnxEmbeddingService {
     /// Returns [`VdbErrorKind::ModelLoad`] if the ONNX model fails to load,
     /// [`VdbErrorKind::TokenizerLoad`] if the tokenizer file is missing or
     /// fails to load, or [`VdbErrorKind::InvalidInput`] if the config is
-    /// invalid (zero dimension/max_tokens).
+    /// invalid (zero `dimension/max_tokens`).
     pub fn new(config: EmbeddingConfig) -> VdbResult<Self> {
         config.validate()?;
 
@@ -155,7 +155,7 @@ impl OnnxEmbeddingService {
                 .with_source(e.to_string())
         })?;
 
-        let mut ids: Vec<i64> = encoding.get_ids().iter().map(|&id| id as i64).collect();
+        let mut ids: Vec<i64> = encoding.get_ids().iter().map(|&id| i64::from(id)).collect();
 
         if ids.len() > self.config.max_tokens {
             log::debug!(
@@ -170,7 +170,7 @@ impl OnnxEmbeddingService {
     }
 
     fn create_attention_mask(ids: &[i64]) -> Vec<i64> {
-        ids.iter().map(|&id| if id == 0 { 0 } else { 1 }).collect()
+        ids.iter().map(|&id| i64::from(id != 0)).collect()
     }
 
     fn infer_single(&self, ids: &[i64]) -> VdbResult<Vec<f32>> {
@@ -255,7 +255,7 @@ impl OnnxEmbeddingService {
         }
 
         if count > 0 {
-            for val in embedding.iter_mut() {
+            for val in &mut embedding {
                 *val /= count as f32;
             }
         }

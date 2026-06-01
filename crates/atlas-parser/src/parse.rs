@@ -23,7 +23,7 @@ pub fn parse_source(source_file: SourceFile) -> AtlasResult<ParseResult> {
                     .with_path(source_file.path.clone())
                     .with_language(source_file.language),
             );
-        log::warn!("{}", err);
+        log::warn!("{err}");
         return Err(err);
     }
 
@@ -114,7 +114,7 @@ pub fn parser_for_language(language: FileLanguage) -> AtlasResult<ParserService>
                     .with_operation("parser_for_language")
                     .with_language(language),
             );
-        log::warn!("{}", err);
+        log::warn!("{err}");
         Err(err)
     }
 }

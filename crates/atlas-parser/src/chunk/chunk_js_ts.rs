@@ -62,7 +62,7 @@ fn extract_name_from_lexical_decl(node: &Node, source_file: &SourceFile) -> Opti
                 return name_node
                     .utf8_text(source_file.source_text.as_bytes())
                     .ok()
-                    .map(|s| s.to_string());
+                    .map(std::string::ToString::to_string);
             }
             if !cursor.goto_next_sibling() {
                 break;
@@ -104,5 +104,5 @@ fn extract_name_from_declaration(node: &Node, source_file: &SourceFile) -> Optio
     name_node
         .utf8_text(source_file.source_text.as_bytes())
         .ok()
-        .map(|s| s.to_string())
+        .map(std::string::ToString::to_string)
 }

@@ -14,13 +14,13 @@ pub enum ExecutionProvider {
     Cpu,
     /// NVIDIA CUDA GPU acceleration.
     Cuda,
-    /// DirectML acceleration (Windows GPU via DX12).
+    /// `DirectML` acceleration (Windows GPU via DX12).
     DirectML,
-    /// CoreML acceleration (Apple Silicon / macOS).
+    /// `CoreML` acceleration (Apple Silicon / macOS).
     CoreML,
-    /// ROCm acceleration (AMD GPU).
+    /// `ROCm` acceleration (AMD GPU).
     Rocm,
-    /// OpenVINO acceleration (Intel).
+    /// `OpenVINO` acceleration (Intel).
     OpenVino,
 }
 
@@ -81,20 +81,21 @@ impl EmbeddingConfig {
     /// [`ExecutionProvider::CoreML`] for Apple Silicon.
     ///
     /// Default is [`ExecutionProvider::Cpu`].
-    pub fn with_execution_provider(mut self, provider: ExecutionProvider) -> Self {
+    #[must_use]
+    pub const fn with_execution_provider(mut self, provider: ExecutionProvider) -> Self {
         self.execution_provider = provider;
         self
     }
 
     /// Validates the configuration.
     ///
-    /// Checks that the model file exists, dimension and max_tokens are non-zero,
+    /// Checks that the model file exists, dimension and `max_tokens` are non-zero,
     /// and the tokenizer file exists if specified.
     ///
     /// # Errors
     ///
     /// Returns [`VdbErrorKind::ModelLoad`] if the model file is missing,
-    /// [`VdbErrorKind::InvalidInput`] if dimension or max_tokens is zero,
+    /// [`VdbErrorKind::InvalidInput`] if dimension or `max_tokens` is zero,
     /// or [`VdbErrorKind::TokenizerLoad`] if the tokenizer file is missing.
     pub fn validate(&self) -> VdbResult<()> {
         if !self.model_path.exists() {

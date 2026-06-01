@@ -61,7 +61,7 @@ impl LlamaModel {
             )));
         }
 
-        let info = Self::read_info(ptr)?;
+        let info = Self::read_info(ptr);
 
         Ok(Self { ptr, info })
     }
@@ -72,19 +72,21 @@ impl LlamaModel {
     }
 
     /// Returns model metadata.
-    pub fn info(&self) -> &ModelInfo {
+    #[must_use]
+    pub const fn info(&self) -> &ModelInfo {
         &self.info
     }
 
     /// Returns the raw C pointer (for use by `LlamaContext`).
-    pub(crate) fn as_ptr(&self) -> *mut ffi::llama_model {
+    pub(crate) const fn as_ptr(&self) -> *mut ffi::llama_model {
         self.ptr
     }
 
     /// Get the model's chat template, or the default if not specified.
+    #[must_use]
     pub fn chat_template(&self, name: Option<&str>) -> Option<String> {
-        let name_c = name.map(|n| CString::new(n).ok()).unwrap_or(None);
-        let name_ptr = name_c.as_ref().map(|c| c.as_ptr()).unwrap_or(ptr::null());
+        let name_c = name.and_then(|n| CString::new(n).ok());
+        let name_ptr = name_c.as_ref().map_or(ptr::null(), |c| c.as_ptr());
 
         unsafe {
             let tmpl_ptr = ffi::llama_model_chat_template(self.ptr, name_ptr);
@@ -93,6 +95,7 @@ impl LlamaModel {
     }
 
     /// Read all metadata key-value pairs from the model.
+    #[must_use]
     pub fn metadata(&self) -> HashMap<String, String> {
         let mut meta = HashMap::new();
         let count = unsafe { ffi::llama_model_meta_count(self.ptr) };
@@ -105,7 +108,7 @@ impl LlamaModel {
                 ffi::llama_model_meta_key_by_index(
                     self.ptr,
                     i,
-                    key_buf.as_mut_ptr() as *mut std::ffi::c_char,
+                    key_buf.as_mut_ptr().cast::<std::ffi::c_char>(),
                     key_buf.len(),
                 )
             };
@@ -113,14 +116,31 @@ impl LlamaModel {
                 ffi::llama_model_meta_val_str_by_index(
                     self.ptr,
                     i,
-                    val_buf.as_mut_ptr() as *mut std::ffi::c_char,
+                    val_buf.as_mut_ptr().cast::<std::ffi::c_char>(),
                     val_buf.len(),
                 )
             };
 
-            if key_len > 0 && val_len > 0 {
+            // Handle negative val_len (indicates required buffer size)
+            let actual_val_len = if val_len < 0 {
+                let required = (-val_len) as usize;
+                val_buf.resize(required + 1, 0);
+                let retry_len = unsafe {
+                    ffi::llama_model_meta_val_str_by_index(
+                        self.ptr,
+                        i,
+                        val_buf.as_mut_ptr().cast::<std::ffi::c_char>(),
+                        val_buf.len(),
+                    )
+                };
+                retry_len.max(0) as usize
+            } else {
+                val_len.max(0) as usize
+            };
+
+            if key_len > 0 && actual_val_len > 0 {
                 let key = String::from_utf8_lossy(&key_buf[..key_len as usize]).into_owned();
-                let val = String::from_utf8_lossy(&val_buf[..val_len as usize]).into_owned();
+                let val = String::from_utf8_lossy(&val_buf[..actual_val_len]).into_owned();
                 meta.insert(key, val);
             }
         }
@@ -129,16 +149,31 @@ impl LlamaModel {
     }
 
     /// Read model metadata into a `ModelInfo` struct.
-    fn read_info(ptr: *mut ffi::llama_model) -> LlmResult<ModelInfo> {
-        let mut desc_buf = vec![0u8; 256];
-        unsafe {
+    fn read_info(ptr: *mut ffi::llama_model) -> ModelInfo {
+        let mut desc_buf = vec![0u8; 1024]; // Larger buffer for model description
+        let desc_len = unsafe {
             ffi::llama_model_desc(
                 ptr,
-                desc_buf.as_mut_ptr() as *mut std::ffi::c_char,
+                desc_buf.as_mut_ptr().cast::<std::ffi::c_char>(),
                 desc_buf.len(),
-            );
+            )
+        };
+
+        // Handle negative desc_len (indicates required buffer size)
+        if desc_len < 0 {
+            let required = (-desc_len) as usize;
+            desc_buf.resize(required + 1, 0);
+            unsafe {
+                ffi::llama_model_desc(
+                    ptr,
+                    desc_buf.as_mut_ptr().cast::<std::ffi::c_char>(),
+                    desc_buf.len(),
+                )
+            };
         }
-        let description = String::from_utf8_lossy(&desc_buf)
+        let actual_desc_len = desc_len.max(0) as usize;
+
+        let description = String::from_utf8_lossy(&desc_buf[..actual_desc_len])
             .trim_end_matches('\0')
             .to_string();
 
@@ -174,13 +209,13 @@ impl LlamaModel {
             let mut m = HashMap::new();
             let count = unsafe { ffi::llama_model_meta_count(ptr) };
             for i in 0..count {
-                let mut key_buf = vec![0u8; 128];
-                let mut val_buf = vec![0u8; 512];
+                let mut key_buf = vec![0u8; 256];
+                let mut val_buf = vec![0u8; 4096]; // Larger buffer for chat templates
                 let key_len = unsafe {
                     ffi::llama_model_meta_key_by_index(
                         ptr,
                         i,
-                        key_buf.as_mut_ptr() as *mut std::ffi::c_char,
+                        key_buf.as_mut_ptr().cast::<std::ffi::c_char>(),
                         key_buf.len(),
                     )
                 };
@@ -188,13 +223,31 @@ impl LlamaModel {
                     ffi::llama_model_meta_val_str_by_index(
                         ptr,
                         i,
-                        val_buf.as_mut_ptr() as *mut std::ffi::c_char,
+                        val_buf.as_mut_ptr().cast::<std::ffi::c_char>(),
                         val_buf.len(),
                     )
                 };
-                if key_len > 0 && val_len > 0 {
+
+                // Handle negative val_len (indicates required buffer size)
+                let actual_val_len = if val_len < 0 {
+                    let required = (-val_len) as usize;
+                    val_buf.resize(required + 1, 0);
+                    let retry_len = unsafe {
+                        ffi::llama_model_meta_val_str_by_index(
+                            ptr,
+                            i,
+                            val_buf.as_mut_ptr().cast::<std::ffi::c_char>(),
+                            val_buf.len(),
+                        )
+                    };
+                    retry_len.max(0) as usize
+                } else {
+                    val_len.max(0) as usize
+                };
+
+                if key_len > 0 && actual_val_len > 0 {
                     let key = String::from_utf8_lossy(&key_buf[..key_len as usize]).into_owned();
-                    let val = String::from_utf8_lossy(&val_buf[..val_len as usize]).into_owned();
+                    let val = String::from_utf8_lossy(&val_buf[..actual_val_len]).into_owned();
                     m.insert(key, val);
                 }
             }
@@ -208,16 +261,15 @@ impl LlamaModel {
 
         let ftype = meta.get("general.file_type").cloned().unwrap_or_else(|| {
             meta.get("general.quantization_version")
-                .map(|v| format!("q{v}"))
-                .unwrap_or_else(|| "unknown".to_string())
+                .map_or_else(|| "unknown".to_string(), |v| format!("q{v}"))
         });
 
         let rope_type_str = {
             let rt = unsafe { ffi::llama_model_rope_type(ptr) };
-            format!("{}", rt)
+            format!("{rt}")
         };
 
-        Ok(ModelInfo {
+        ModelInfo {
             description,
             architecture,
             n_params,
@@ -234,7 +286,7 @@ impl LlamaModel {
             rope_type: rope_type_str,
             has_encoder,
             has_decoder,
-        })
+        }
     }
 }
 
@@ -299,23 +351,19 @@ impl LlamaContext {
         let sampler = Self::create_default_sampler();
 
         log::info!(
-            "LlamaContext created: n_ctx={}, n_batch={}, threads={}/{}",
-            actual_n_ctx,
-            actual_n_batch,
-            n_threads,
-            n_threads_batch
+            "LlamaContext created: n_ctx={actual_n_ctx}, n_batch={actual_n_batch}, threads={n_threads}/{n_threads_batch}"
         );
 
         Ok(Self { ctx, model, sampler: UnsafeCell::new(sampler), n_ctx: actual_n_ctx })
     }
 
     /// Returns the context size.
-    pub fn n_ctx(&self) -> u32 {
+    pub const fn n_ctx(&self) -> u32 {
         self.n_ctx
     }
 
     /// Returns the model reference.
-    pub fn model(&self) -> &Arc<LlamaModel> {
+    pub const fn model(&self) -> &Arc<LlamaModel> {
         &self.model
     }
 
@@ -330,6 +378,9 @@ impl LlamaContext {
             .map_err(|_| LlmError::TokenizeFailed("text contains null bytes".into()))?;
 
         // First call to get required buffer size
+        // llama_tokenize returns:
+        //   - positive number: required token count
+        //   - negative number: need abs(n) space (old behavior)
         let n = unsafe {
             ffi::llama_tokenize(
                 self.vocab(),
@@ -342,62 +393,70 @@ impl LlamaContext {
             )
         };
 
-        if n < 0 {
-            // Negative means we need abs(n) space
-            let size = (-n) as usize;
-            let mut tokens = vec![0i32; size];
-            let actual = unsafe {
-                ffi::llama_tokenize(
-                    self.vocab(),
-                    text_c.as_ptr(),
-                    text.len() as i32,
-                    tokens.as_mut_ptr(),
-                    size as i32,
-                    add_special,
-                    false,
-                )
-            };
-
-            if actual < 0 {
-                return Err(LlmError::TokenizeFailed(format!("tokenization returned {}", actual)));
-            }
-            tokens.truncate(actual as usize);
-            Ok(tokens)
-        } else {
-            Ok(Vec::new())
+        if n == 0 {
+            return Ok(Vec::new());
         }
+
+        // Determine required size
+        let size = if n < 0 { (-n) as usize } else { n as usize };
+        let mut tokens = vec![0i32; size];
+
+        // Second call to actually tokenize
+        let actual = unsafe {
+            ffi::llama_tokenize(
+                self.vocab(),
+                text_c.as_ptr(),
+                text.len() as i32,
+                tokens.as_mut_ptr(),
+                size as i32,
+                add_special,
+                false,
+            )
+        };
+
+        if actual < 0 {
+            return Err(LlmError::TokenizeFailed(format!("tokenization returned {actual}")));
+        }
+
+        tokens.truncate(actual.max(0) as usize);
+        Ok(tokens)
     }
 
     /// Detokenize a token into its text representation.
     pub fn token_to_piece(&self, token: ffi::llama_token) -> String {
-        let mut buf = vec![0u8; 64];
+        let mut buf = vec![0u8; 256]; // Larger buffer for multi-byte chars
         let len = unsafe {
             ffi::llama_token_to_piece(
                 self.vocab(),
                 token,
-                buf.as_mut_ptr() as *mut std::ffi::c_char,
+                buf.as_mut_ptr().cast::<std::ffi::c_char>(),
                 buf.len() as i32,
                 0,
                 true,
             )
         };
-        if len < 0 {
+
+        let actual_len = if len < 0 {
             // Need larger buffer
-            let size = (-len) as usize;
-            buf.resize(size, 0);
-            unsafe {
+            let required_size = (-len) as usize;
+            buf.resize(required_size + 1, 0);
+            let retry_len = unsafe {
                 ffi::llama_token_to_piece(
                     self.vocab(),
                     token,
-                    buf.as_mut_ptr() as *mut std::ffi::c_char,
-                    size as i32,
+                    buf.as_mut_ptr().cast::<std::ffi::c_char>(),
+                    buf.len() as i32,
                     0,
                     true,
-                );
-            }
-        }
+                )
+            };
+            retry_len.max(0) as usize
+        } else {
+            len.max(0) as usize
+        };
+
         String::from_utf8_lossy(
-            &buf[..len.max(0) as usize]
+            &buf[..actual_len]
                 .iter()
                 .take_while(|&&b| b != 0)
                 .copied()
@@ -449,8 +508,13 @@ impl LlamaContext {
     }
 
     /// Sample the next token from the logits at position `idx`.
-    fn sample(&self, idx: i32) -> ffi::llama_token {
-        unsafe { ffi::llama_sampler_sample(self.get_sampler(), self.ctx, idx) }
+    ///
+    /// Also calls `llama_sampler_accept()` to update sampler state
+    /// (required for `repeat_penalty`, etc.).
+    fn sample_and_accept(&self, idx: i32) -> ffi::llama_token {
+        let token = unsafe { ffi::llama_sampler_sample(self.get_sampler(), self.ctx, idx) };
+        unsafe { ffi::llama_sampler_accept(self.get_sampler(), token) };
+        token
     }
 
     /// Run inference synchronously.
@@ -490,8 +554,8 @@ impl LlamaContext {
                 });
             }
 
-            // Sample the next token
-            let next_token = self.sample(-1);
+            // Sample the next token and update sampler state
+            let next_token = self.sample_and_accept(-1);
 
             // Check for EOS
             if next_token == eos || self.is_eog(next_token) {
@@ -525,7 +589,7 @@ impl LlamaContext {
         let duration = start_time.elapsed();
         let completion_tokens = generated_tokens.len() as i32;
         let tps = if duration.as_secs_f64() > 0.0 {
-            completion_tokens as f64 / duration.as_secs_f64()
+            f64::from(completion_tokens) / duration.as_secs_f64()
         } else {
             0.0
         };
@@ -580,7 +644,7 @@ impl LlamaContext {
                 return Ok(TokenUsage::new(prompt_n, generated_tokens.len() as i32));
             }
 
-            let next_token = self.sample(-1);
+            let next_token = self.sample_and_accept(-1);
 
             if next_token == eos || self.is_eog(next_token) {
                 break;
@@ -622,35 +686,46 @@ impl LlamaContext {
         if tokens.is_empty() {
             return String::new();
         }
-        let mut buf = vec![0u8; tokens.len() * 16]; // rough estimate
+
+        // Use a larger initial buffer to avoid frequent reallocations
+        // Each token can expand to multiple bytes (especially for CJK characters)
+        let mut buf = vec![0u8; tokens.len() * 64 + 256]; // generous estimate
+
         let len = unsafe {
             ffi::llama_detokenize(
                 self.vocab(),
                 tokens.as_ptr(),
                 tokens.len() as i32,
-                buf.as_mut_ptr() as *mut std::ffi::c_char,
+                buf.as_mut_ptr().cast::<std::ffi::c_char>(),
                 buf.len() as i32,
                 false,
                 true,
             )
         };
-        if len < 0 {
-            let size = (-len) as usize;
-            buf.resize(size, 0);
-            unsafe {
+
+        // If len is negative, it indicates the required buffer size
+        let actual_len = if len < 0 {
+            let required_size = (-len) as usize;
+            buf.resize(required_size + 1, 0); // +1 for null terminator
+            let retry_len = unsafe {
                 ffi::llama_detokenize(
                     self.vocab(),
                     tokens.as_ptr(),
                     tokens.len() as i32,
-                    buf.as_mut_ptr() as *mut std::ffi::c_char,
-                    size as i32,
+                    buf.as_mut_ptr().cast::<std::ffi::c_char>(),
+                    buf.len() as i32,
                     false,
                     true,
-                );
-            }
-        }
+                )
+            };
+            retry_len.max(0) as usize
+        } else {
+            len.max(0) as usize
+        };
+
+        // Convert to string, handling potential null bytes
         String::from_utf8_lossy(
-            &buf[..len.max(0) as usize]
+            &buf[..actual_len]
                 .iter()
                 .take_while(|&&b| b != 0)
                 .copied()

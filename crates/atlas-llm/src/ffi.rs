@@ -48,7 +48,7 @@ pub struct llama_sampler {
     _private: [u8; 0],
 }
 
-/// Opaque handle to a LoRA adapter.
+/// Opaque handle to a `LoRA` adapter.
 #[repr(C)]
 pub struct llama_adapter_lora {
     _private: [u8; 0],

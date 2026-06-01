@@ -33,10 +33,12 @@ pub struct HnswVectorStore {
 }
 
 impl HnswVectorStore {
+    #[must_use]
     pub fn new() -> Self {
         Self::with_params(DEFAULT_M, DEFAULT_EF_CONSTRUCTION, DEFAULT_EF_SEARCH)
     }
 
+    #[must_use]
     pub fn with_params(m: usize, ef_construction: usize, ef_search: usize) -> Self {
         let m_max = m;
         let m_max0 = m * 2;
@@ -55,15 +57,18 @@ impl HnswVectorStore {
         }
     }
 
-    pub fn dimension(&self) -> usize {
+    #[must_use]
+    pub const fn dimension(&self) -> usize {
         self.dimension
     }
 
-    pub fn len(&self) -> usize {
+    #[must_use]
+    pub const fn len(&self) -> usize {
         self.nodes.len()
     }
 
-    pub fn is_empty(&self) -> bool {
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
         self.nodes.is_empty()
     }
 
@@ -301,6 +306,7 @@ impl HnswVectorStore {
         self.entry_point = None;
     }
 
+    #[must_use]
     pub fn find(&self, chunk_id: &str) -> Option<EmbeddingVector> {
         self.index
             .get(chunk_id)
@@ -341,7 +347,7 @@ impl HnswVectorStore {
                 .with_source(e.to_string())
         })?;
 
-        let ep = self.entry_point.map(|e| e as u32).unwrap_or(u32::MAX);
+        let ep = self.entry_point.map_or(u32::MAX, |e| e as u32);
         writer.write_all(&ep.to_le_bytes()).map_err(|e| {
             VdbError::io("Failed to write entry point")
                 .with_context(VdbContext::default().with_path(path).with_operation("save"))
@@ -463,8 +469,7 @@ impl HnswVectorStore {
         let version = u32::from_le_bytes(version_bytes);
         if version != HNSW_VERSION {
             return Err(VdbError::storage(format!(
-                "Unsupported version: expected {}, got {}",
-                HNSW_VERSION, version
+                "Unsupported version: expected {HNSW_VERSION}, got {version}"
             ))
             .with_context(VdbContext::default().with_path(path).with_operation("load")));
         }

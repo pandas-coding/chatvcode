@@ -49,7 +49,7 @@ fn extract_name_from_namespace(node: &Node, source_file: &SourceFile) -> Option<
                 return child
                     .utf8_text(source_file.source_text.as_bytes())
                     .ok()
-                    .map(|s| s.to_string());
+                    .map(std::string::ToString::to_string);
             }
             if !cursor.goto_next_sibling() {
                 break;

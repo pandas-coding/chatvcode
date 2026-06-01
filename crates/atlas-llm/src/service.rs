@@ -12,7 +12,10 @@ use std::sync::mpsc;
 use crate::context::{LlamaContext, LlamaModel};
 use crate::error::{LlmError, LlmResult};
 use crate::gguf;
-use crate::types::*;
+use crate::types::{
+    ChatMessage, ChatTemplate, GenerationParams, InferenceResponse, LlmConfig, ModelInfo,
+    StopReason, StreamEvent, TokenUsage,
+};
 
 // ---------------------------------------------------------------------------
 // Service trait
@@ -218,25 +221,22 @@ impl LlamaService {
             }
         };
 
-        match &tmpl_str {
-            Some(tmpl) => {
-                // Use llama.cpp's built-in chat template engine
-                Self::apply_chat_template(tmpl, &chat_messages, true)
-            }
-            None => {
-                // Fallback: use ChatML format
-                let tmpl = ChatTemplate::ChatML.template_name().unwrap_or("chatml");
-                if let Some(tmpl_str) = self.model.chat_template(Some(tmpl)) {
-                    Self::apply_chat_template(&tmpl_str, &chat_messages, true)
-                } else {
-                    // Ultimate fallback: simple concatenation
-                    let mut prompt = String::new();
-                    for msg in &chat_messages {
-                        prompt.push_str(&format!("<|{}|>\n{}\n", msg.role, msg.content));
-                    }
-                    prompt.push_str("<|assistant|>\n");
-                    Ok(prompt)
+        if let Some(tmpl) = &tmpl_str {
+            // Use llama.cpp's built-in chat template engine
+            Self::apply_chat_template(tmpl, &chat_messages, true)
+        } else {
+            // Fallback: use ChatML format
+            let tmpl = ChatTemplate::ChatML.template_name().unwrap_or("chatml");
+            if let Some(tmpl_str) = self.model.chat_template(Some(tmpl)) {
+                Self::apply_chat_template(&tmpl_str, &chat_messages, true)
+            } else {
+                // Ultimate fallback: simple concatenation
+                let mut prompt = String::new();
+                for msg in &chat_messages {
+                    prompt.push_str(&format!("<|{}|>\n{}\n", msg.role, msg.content));
                 }
+                prompt.push_str("<|assistant|>\n");
+                Ok(prompt)
             }
         }
     }
@@ -284,10 +284,7 @@ impl LlamaService {
         };
 
         if needed < 0 {
-            return Err(LlmError::Internal(format!(
-                "chat template application failed: {}",
-                needed
-            )));
+            return Err(LlmError::Internal(format!("chat template application failed: {needed}")));
         }
 
         let mut buf = vec![0u8; needed as usize + 1];
@@ -297,7 +294,7 @@ impl LlamaService {
                 c_msgs.as_ptr(),
                 c_msgs.len(),
                 add_ass,
-                buf.as_mut_ptr() as *mut std::ffi::c_char,
+                buf.as_mut_ptr().cast::<std::ffi::c_char>(),
                 buf.len() as i32,
             )
         };
@@ -312,7 +309,7 @@ impl LlamaService {
                     c_msgs.as_ptr(),
                     c_msgs.len(),
                     add_ass,
-                    buf.as_mut_ptr() as *mut std::ffi::c_char,
+                    buf.as_mut_ptr().cast::<std::ffi::c_char>(),
                     buf.len() as i32,
                 );
             }
@@ -389,6 +386,7 @@ impl LlmService for LlamaService {
 // ---------------------------------------------------------------------------
 
 /// Default model directory: `~/.codeatlas/models/`
+#[must_use]
 pub fn default_model_dir() -> PathBuf {
     dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("."))
@@ -408,7 +406,8 @@ pub fn auto_discover_model() -> LlmResult<PathBuf> {
     let dir = default_model_dir();
 
     if !dir.exists() {
-        let msg = dedent(&format!("
+        let msg = dedent(&format!(
+            "
             Model directory does not exist: {dir}
 
             To get started with CodeAtlas, you need a GGUF model file.
@@ -434,7 +433,9 @@ pub fn auto_discover_model() -> LlmResult<PathBuf> {
               mkdir -p {dir}
               curl -Lo {dir}/model.gguf '<URL>'
               code-atlas chat 'Explain the main function'
-        ", dir = dir.display()));
+        ",
+            dir = dir.display()
+        ));
         return Err(LlmError::ModelNotFound(msg));
     }
 
@@ -447,16 +448,15 @@ pub fn auto_discover_model() -> LlmResult<PathBuf> {
         if let Ok(entries) = std::fs::read_dir(&dir) {
             for entry in entries.flatten() {
                 let path = entry.path();
-                if path.extension().is_some_and(|ext| ext == "gguf")
-                    || gguf::is_gguf_file(&path)
-                {
+                if path.extension().is_some_and(|ext| ext == "gguf") || gguf::is_gguf_file(&path) {
                     raw_ggufs.push(path);
                 }
             }
         }
 
         if raw_ggufs.is_empty() {
-            return Err(LlmError::ModelNotFound(dedent(&format!("
+            return Err(LlmError::ModelNotFound(dedent(&format!(
+                "
                 No GGUF model files found in: {dir}
 
                 📥 To get started, download a GGUF model from HuggingFace
@@ -467,23 +467,29 @@ pub fn auto_discover_model() -> LlmResult<PathBuf> {
                   - Qwen2.5-Coder-7B-Instruct-GGUF
                   - deepseek-coder-6.7B-instruct-GGUF
                   - CodeLlama-7B-Instruct-GGUF
-            ", dir = dir.display()))));
-        } else {
-            // Files exist but failed validation
-            let listing: Vec<String> = raw_ggufs.iter().map(|p| p.display().to_string()).collect();
-            return Err(LlmError::ModelLoadFailed(dedent(&format!("
-                Found {count} file(s) with .gguf extension in {dir},
-                but validation failed:
-                  {listing}
-
-                Possible causes:
-                  - File is corrupted or incomplete (try re-downloading)
-                  - File format is not supported (GGUF v2/v3 required)
-                  - File is not a valid GGUF file (check if you downloaded the correct format)
-
-                Tip: Look for files with 'GGUF' in the filename on HuggingFace.
-            ", count = raw_ggufs.len(), dir = dir.display(), listing = listing.join("\n  ")))));
+            ",
+                dir = dir.display()
+            ))));
         }
+        // Files exist but failed validation
+        let listing: Vec<String> = raw_ggufs.iter().map(|p| p.display().to_string()).collect();
+        return Err(LlmError::ModelLoadFailed(dedent(&format!(
+            "
+            Found {count} file(s) with .gguf extension in {dir},
+            but validation failed:
+              {listing}
+
+            Possible causes:
+              - File is corrupted or incomplete (try re-downloading)
+              - File format is not supported (GGUF v2/v3 required)
+              - File is not a valid GGUF file (check if you downloaded the correct format)
+
+            Tip: Look for files with 'GGUF' in the filename on HuggingFace.
+        ",
+            count = raw_ggufs.len(),
+            dir = dir.display(),
+            listing = listing.join("\n  ")
+        ))));
     }
 
     if models.len() == 1 {
@@ -543,6 +549,7 @@ pub fn auto_discover_model() -> LlmResult<PathBuf> {
 /// ");
 /// assert_eq!(s, "\nHello\n  World\n");
 /// ```
+#[must_use]
 pub fn dedent(s: &str) -> String {
     let min_indent = s
         .lines()
@@ -580,7 +587,8 @@ fn enhance_model_error(error: LlmError, model_path: &Path) -> LlmError {
     match error {
         LlmError::ModelNotFound(_) => {
             let dir = default_model_dir();
-            LlmError::ModelNotFound(dedent(&format!("
+            LlmError::ModelNotFound(dedent(&format!(
+                "
                 Model not found: {path}
 
                 To use a local model, download a GGUF file and place it in:
@@ -589,11 +597,15 @@ fn enhance_model_error(error: LlmError, model_path: &Path) -> LlmError {
                 Or specify a model path with --model <path>.
 
                 📥 Recommended models: https://huggingface.co/models?search=GGUF
-            ", path = model_path.display(), dir = dir.display())))
+            ",
+                path = model_path.display(),
+                dir = dir.display()
+            )))
         }
         LlmError::ModelLoadFailed(_) => {
             let file_size = gguf::format_file_size(model_path);
-            LlmError::ModelLoadFailed(dedent(&format!("
+            LlmError::ModelLoadFailed(dedent(&format!(
+                "
                 Failed to load model '{path}' ({file_size}).
 
                 Possible causes:
@@ -603,15 +615,20 @@ fn enhance_model_error(error: LlmError, model_path: &Path) -> LlmError {
                   4. Incompatible GGUF version — may need newer llama.cpp
 
                 Error details: {err_msg}
-            ", path = model_path.display())))
+            ",
+                path = model_path.display()
+            )))
         }
-        LlmError::Unsupported(msg) => LlmError::Unsupported(dedent(&format!("
+        LlmError::Unsupported(msg) => LlmError::Unsupported(dedent(&format!(
+            "
             Unsupported model '{path}': {msg}
 
             This model uses features not supported by the current build
             of llama.cpp. Check that the GGUF version is 2 or 3, and
             that the model architecture is supported.
-        ", path = model_path.display()))),
+        ",
+            path = model_path.display()
+        ))),
         LlmError::Io(io_err) => LlmError::Io(std::io::Error::new(
             io_err.kind(),
             format!("Cannot read model file '{}': {err_msg}", model_path.display()),
@@ -620,14 +637,263 @@ fn enhance_model_error(error: LlmError, model_path: &Path) -> LlmError {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Mock service for testing
+// ---------------------------------------------------------------------------
+
+/// A mock [`LlmService`] implementation for testing.
+///
+/// Returns pre-configured responses without requiring a real model.
+pub struct MockLlmService {
+    info: ModelInfo,
+    /// Fixed response text for `infer()` calls.
+    response_text: String,
+    /// Simulated tokens per second.
+    tokens_per_second: f64,
+}
+
+impl MockLlmService {
+    /// Create a new mock service with default model info.
+    pub fn new(response_text: impl Into<String>) -> Self {
+        Self {
+            info: ModelInfo {
+                description: "Mock Model (7B)".into(),
+                architecture: "mock".into(),
+                n_params: 7_000_000_000,
+                size_bytes: 4_000_000_000,
+                n_ctx_train: 4096,
+                n_embd: 4096,
+                n_layer: 32,
+                n_head: 32,
+                n_head_kv: 32,
+                n_vocab: 32000,
+                vocab_type: "bpe".into(),
+                ftype: "q4_0".into(),
+                chat_template_available: true,
+                rope_type: "0".into(),
+                has_encoder: false,
+                has_decoder: true,
+            },
+            response_text: response_text.into(),
+            tokens_per_second: 50.0,
+        }
+    }
+
+    /// Set custom tokens per second for testing.
+    #[must_use]
+    pub const fn with_tokens_per_second(mut self, tps: f64) -> Self {
+        self.tokens_per_second = tps;
+        self
+    }
+}
+
+impl LlmService for MockLlmService {
+    fn infer(
+        &self,
+        _prompt: &str,
+        params: &GenerationParams,
+        cancel_flag: Option<&AtomicBool>,
+    ) -> LlmResult<InferenceResponse> {
+        // Check cancellation
+        if let Some(flag) = cancel_flag
+            && flag.load(std::sync::atomic::Ordering::Relaxed)
+        {
+            return Ok(InferenceResponse {
+                text: String::new(),
+                stop_reason: StopReason::Cancelled,
+                token_usage: TokenUsage::new(0, 0),
+                duration: std::time::Duration::from_millis(0),
+                time_to_first_token: None,
+                tokens_per_second: 0.0,
+            });
+        }
+
+        // Simulate some processing time
+        let start = std::time::Instant::now();
+        let completion_tokens = (self.response_text.len() / 4).max(1) as i32;
+        let duration = std::time::Duration::from_secs_f64(
+            f64::from(completion_tokens) / self.tokens_per_second,
+        );
+
+        // Simulate max_tokens check
+        let text = if completion_tokens > params.max_tokens {
+            // Truncate
+            let max_chars = (params.max_tokens as usize) * 4;
+            self.response_text[..max_chars.min(self.response_text.len())].to_string()
+        } else {
+            self.response_text.clone()
+        };
+
+        let actual_tokens = (text.len() / 4).max(1) as i32;
+        let stop_reason = if actual_tokens >= params.max_tokens {
+            StopReason::MaxTokens
+        } else {
+            StopReason::Eos
+        };
+
+        Ok(InferenceResponse {
+            text,
+            stop_reason,
+            token_usage: TokenUsage::new(10, actual_tokens), // Mock prompt tokens
+            duration: start.elapsed().max(duration),         // Ensure some duration
+            time_to_first_token: Some(std::time::Duration::from_millis(50)),
+            tokens_per_second: self.tokens_per_second,
+        })
+    }
+
+    fn infer_stream(
+        &self,
+        _prompt: &str,
+        _params: &GenerationParams,
+        _cancel_flag: Option<Arc<AtomicBool>>,
+    ) -> LlmResult<mpsc::Receiver<StreamEvent>> {
+        // Simple mock: send all text as a single token event
+        let (tx, rx) = mpsc::channel();
+        let text = self.response_text.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send(StreamEvent::Started);
+            let _ = tx.send(StreamEvent::Token(text));
+            let _ = tx.send(StreamEvent::Completed);
+        });
+        Ok(rx)
+    }
+
+    fn model_info(&self) -> LlmResult<ModelInfo> {
+        Ok(self.info.clone())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::AtomicBool;
 
     #[test]
     fn test_default_model_dir() {
         let dir = default_model_dir();
         assert!(dir.to_string_lossy().contains(".codeatlas"));
         assert!(dir.to_string_lossy().contains("models"));
+    }
+
+    #[test]
+    fn test_mock_service_infer_basic() {
+        let service = MockLlmService::new("Hello, I am a mock AI assistant.");
+        let params = GenerationParams::default();
+        let response = service.infer("test prompt", &params, None).unwrap();
+
+        // Verify response contains expected text
+        assert_eq!(response.text, "Hello, I am a mock AI assistant.");
+
+        // Verify stop reason
+        assert_eq!(response.stop_reason, StopReason::Eos);
+
+        // Verify token usage
+        assert!(response.token_usage.prompt_tokens > 0);
+        assert!(response.token_usage.completion_tokens > 0);
+        assert_eq!(
+            response.token_usage.total_tokens,
+            response.token_usage.prompt_tokens + response.token_usage.completion_tokens
+        );
+
+        // Verify timing
+        assert!(response.duration.as_millis() > 0);
+        assert!(response.tokens_per_second > 0.0);
+    }
+
+    #[test]
+    fn test_mock_service_infer_cancelled() {
+        let service = MockLlmService::new("This should not be returned.");
+        let params = GenerationParams::default();
+        let cancel_flag = AtomicBool::new(true);
+
+        let response = service.infer("test", &params, Some(&cancel_flag)).unwrap();
+        assert_eq!(response.stop_reason, StopReason::Cancelled);
+        assert!(response.text.is_empty());
+    }
+
+    #[test]
+    fn test_mock_service_infer_max_tokens() {
+        let service = MockLlmService::new("A very long response that should be truncated.");
+        let params = GenerationParams {
+            max_tokens: 2, // Very low limit
+            ..GenerationParams::default()
+        };
+
+        let response = service.infer("test", &params, None).unwrap();
+        assert_eq!(response.stop_reason, StopReason::MaxTokens);
+    }
+
+    #[test]
+    fn test_mock_service_model_info() {
+        let service = MockLlmService::new("test");
+        let info = service.model_info().unwrap();
+
+        assert_eq!(info.architecture, "mock");
+        assert_eq!(info.n_vocab, 32000);
+        assert!(info.chat_template_available);
+    }
+
+    #[test]
+    fn test_generation_params_builder() {
+        let params = GenerationParams::default()
+            .with_temperature(0.5)
+            .with_top_p(0.95)
+            .with_top_k(50)
+            .with_max_tokens(1024)
+            .with_seed(42);
+
+        assert!((params.temperature - 0.5).abs() < f32::EPSILON);
+        assert!((params.top_p - 0.95).abs() < f32::EPSILON);
+        assert_eq!(params.top_k, 50);
+        assert_eq!(params.max_tokens, 1024);
+        assert_eq!(params.seed, 42);
+    }
+
+    #[test]
+    fn test_stop_reason_equality() {
+        assert_eq!(StopReason::Eos, StopReason::Eos);
+        assert_eq!(StopReason::MaxTokens, StopReason::MaxTokens);
+        assert_eq!(StopReason::StopString("stop".into()), StopReason::StopString("stop".into()));
+        assert_eq!(StopReason::Cancelled, StopReason::Cancelled);
+        assert_ne!(StopReason::Eos, StopReason::MaxTokens);
+    }
+
+    #[test]
+    fn test_inference_response_fields() {
+        let service = MockLlmService::new("Test response");
+        let params = GenerationParams {
+            temperature: 0.8,
+            top_p: 0.9,
+            top_k: 40,
+            repeat_penalty: 1.1,
+            max_tokens: 512,
+            ..GenerationParams::default()
+        };
+
+        let response = service.infer("test prompt", &params, None).unwrap();
+
+        // Verify all required fields are present and valid
+        assert!(!response.text.is_empty());
+        assert!(response.duration.as_nanos() > 0);
+        assert!(response.tokens_per_second > 0.0);
+        assert!(response.token_usage.prompt_tokens > 0);
+        assert!(response.token_usage.completion_tokens > 0);
+        assert_eq!(
+            response.token_usage.total_tokens,
+            response.token_usage.prompt_tokens + response.token_usage.completion_tokens
+        );
+    }
+
+    #[test]
+    fn test_dedent_basic() {
+        let input = "\n    Hello\n      World\n    ";
+        let expected = "\nHello\n  World\n";
+        assert_eq!(dedent(input), expected);
+    }
+
+    #[test]
+    fn test_dedent_no_indent() {
+        let input = "Hello\nWorld";
+        assert_eq!(dedent(input), input);
     }
 }

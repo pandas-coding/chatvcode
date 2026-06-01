@@ -2,7 +2,7 @@ use atlas_core::{AtlasError, AtlasResult, ErrorContext, FileLanguage, SourceFile
 use tree_sitter::{Language, Parser, Tree};
 use tree_sitter_language::LanguageFn;
 
-fn language_fn_for(lang: FileLanguage) -> Option<LanguageFn> {
+const fn language_fn_for(lang: FileLanguage) -> Option<LanguageFn> {
     match lang {
         FileLanguage::Rust => Some(tree_sitter_rust::LANGUAGE),
         FileLanguage::JavaScript | FileLanguage::Jsx => Some(tree_sitter_javascript::LANGUAGE),
@@ -37,6 +37,7 @@ impl std::fmt::Debug for ParserService {
 
 impl ParserService {
     /// Creates a new parser service.
+    #[must_use]
     pub fn new() -> Self {
         Self { parser: Parser::new() }
     }
@@ -56,7 +57,7 @@ impl ParserService {
                     .with_path(source_file.path.clone())
                     .with_language(source_file.language),
             );
-            log::error!("{}", err);
+            log::error!("{err}");
             err
         })?;
 
@@ -69,7 +70,7 @@ impl ParserService {
                         .with_language(source_file.language),
                 )
                 .with_source(e.to_string());
-            log::error!("{}", err);
+            log::error!("{err}");
             err
         })?;
 
@@ -86,7 +87,7 @@ impl ParserService {
                         .with_path(source_file.path.clone())
                         .with_language(source_file.language),
                 );
-                log::error!("{}", err);
+                log::error!("{err}");
                 err
             })
     }

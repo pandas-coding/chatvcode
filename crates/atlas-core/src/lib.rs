@@ -1,3 +1,16 @@
+#![allow(
+    clippy::missing_errors_doc,
+    clippy::must_use_candidate,
+    clippy::return_self_not_must_use,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_possible_wrap,
+    clippy::too_many_lines,
+    clippy::match_same_arms,
+    clippy::option_if_let_else,
+    clippy::missing_const_for_fn,
+    clippy::doc_markdown
+)]
 use std::path::PathBuf;
 use std::time::Instant;
 
@@ -65,7 +78,7 @@ pub fn index_path_with_options(
 
     if !path.exists() {
         let err = AtlasError::invalid_input(format!("Path does not exist: {}", path.display()));
-        log::error!("{}", err);
+        log::error!("{err}");
         return Err(err);
     }
 
@@ -82,7 +95,7 @@ pub fn index_path_with_options(
                 Some(state)
             }
             Err(e) => {
-                log::warn!("Could not load incremental state: {}", e);
+                log::warn!("Could not load incremental state: {e}");
                 None
             }
         }
@@ -140,13 +153,13 @@ pub fn index_path_with_options(
                         Ok(parse_result)
                     }
                     Err(e) => {
-                        log::error!("Failed to parse file: {}", e);
+                        log::error!("Failed to parse file: {e}");
                         Err(e)
                     }
                 }
             }
             Err(e) => {
-                log::error!("Scan error: {}", e);
+                log::error!("Scan error: {e}");
                 Err(e)
             }
         })
@@ -193,7 +206,7 @@ pub fn index_path_with_options(
             }
         }
         if let Err(e) = new_state.save(state_path) {
-            log::warn!("Failed to save incremental state: {}", e);
+            log::warn!("Failed to save incremental state: {e}");
         }
     }
 
@@ -202,7 +215,7 @@ pub fn index_path_with_options(
             match atlas_vdb::OnnxEmbeddingService::new(embedding_opts.config.clone()) {
                 Ok(svc) => svc,
                 Err(e) => {
-                    log::error!("Failed to initialize embedding service: {}", e);
+                    log::error!("Failed to initialize embedding service: {e}");
                     index_result.stats.embedded_chunks = 0;
                     index_result.stats.embedding_errors = index_result.stats.total_chunks;
                     index_result.stats.embedding_dimension = 0;
@@ -263,13 +276,13 @@ fn run_embedding_with_service(
                 match store.add(embedding_vectors) {
                     Ok(()) => embedded += batch.len(),
                     Err(e) => {
-                        log::warn!("Failed to add embedding vectors to store: {}", e);
+                        log::warn!("Failed to add embedding vectors to store: {e}");
                         emb_errors += batch.len();
                     }
                 }
             }
             Err(e) => {
-                log::warn!("Embedding inference failed for batch: {}", e);
+                log::warn!("Embedding inference failed for batch: {e}");
                 emb_errors += batch.len();
             }
         }
@@ -281,7 +294,7 @@ fn run_embedding_with_service(
         if let Some(parent) = opts.vector_store_path.parent()
             && let Err(e) = std::fs::create_dir_all(parent)
         {
-            log::warn!("Failed to create vector store directory: {}", e);
+            log::warn!("Failed to create vector store directory: {e}");
         }
         match store.save(&opts.vector_store_path) {
             Ok(()) => {
@@ -292,16 +305,13 @@ fn run_embedding_with_service(
                 );
             }
             Err(e) => {
-                log::warn!("Failed to save vector store: {}", e);
+                log::warn!("Failed to save vector store: {e}");
             }
         }
     }
 
     log::info!(
-        "Embedding complete: {} chunks embedded, {} errors, dimension {}",
-        embedded,
-        emb_errors,
-        dimension
+        "Embedding complete: {embedded} chunks embedded, {emb_errors} errors, dimension {dimension}"
     );
 
     (embedded, emb_errors, dimension)
@@ -329,7 +339,7 @@ pub fn search(
 
     let embedding_service = atlas_vdb::OnnxEmbeddingService::new(options.embedding_config.clone())
         .map_err(|e: atlas_vdb::VdbError| {
-            AtlasError::internal(format!("Failed to initialize embedding service: {}", e))
+            AtlasError::internal(format!("Failed to initialize embedding service: {e}"))
                 .with_context(
                     ErrorContext::default()
                         .with_operation("search")
@@ -358,7 +368,7 @@ pub fn search_with_service(
 
     let store = atlas_vdb::InMemoryVectorStore::load(&options.vector_store_path).map_err(
         |e: atlas_vdb::VdbError| {
-            AtlasError::io(format!("Failed to load vector store: {}", e))
+            AtlasError::io(format!("Failed to load vector store: {e}"))
                 .with_context(
                     ErrorContext::default()
                         .with_operation("search")
@@ -375,12 +385,12 @@ pub fn search_with_service(
 
     log::info!("Loaded vector store with {} vectors", store.len());
 
-    log::info!("Embedding query: {:?}", query);
+    log::info!("Embedding query: {query:?}");
 
     let query_vectors = embedding_service
         .embed(&[query])
         .map_err(|e: atlas_vdb::VdbError| {
-            AtlasError::internal(format!("Failed to embed query: {}", e))
+            AtlasError::internal(format!("Failed to embed query: {e}"))
                 .with_context(ErrorContext::default().with_operation("search"))
                 .with_source(e.to_string())
         })?;
@@ -395,7 +405,7 @@ pub fn search_with_service(
     let raw_results = store
         .search(&query_vector, options.top_k, options.min_score)
         .map_err(|e: atlas_vdb::VdbError| {
-            AtlasError::internal(format!("Vector store search failed: {}", e))
+            AtlasError::internal(format!("Vector store search failed: {e}"))
                 .with_context(ErrorContext::default().with_operation("search"))
                 .with_source(e.to_string())
         })?;

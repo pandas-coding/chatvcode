@@ -42,7 +42,7 @@ fn main() {
                     println!("  ✓ no parse errors");
                 } else {
                     for e in &result.errors {
-                        println!("  ✗ {}", e);
+                        println!("  ✗ {e}");
                     }
                 }
                 println!("  chunks: {}", result.chunks.len());
@@ -57,7 +57,7 @@ fn main() {
                 }
             }
             Err(e) => {
-                eprintln!("  ✗ {}", e);
+                eprintln!("  ✗ {e}");
             }
         }
         println!();

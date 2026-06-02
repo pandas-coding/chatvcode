@@ -119,13 +119,13 @@ fn test_vector_store_write_and_read() {
         .iter()
         .zip(vectors)
         .enumerate()
-        .map(|(i, (_, vector))| EmbeddingVector::new(format!("chunk_{}", i), vector))
+        .map(|(i, (_, vector))| EmbeddingVector::new(format!("chunk_{i}"), vector))
         .collect();
     store.add(evs).unwrap();
 
     assert_eq!(store.len(), 3);
     for i in 0..3 {
-        let found = store.find(&format!("chunk_{}", i));
+        let found = store.find(&format!("chunk_{i}"));
         assert!(found.is_some());
         assert_eq!(found.unwrap().vector.len(), 32);
     }
@@ -145,7 +145,7 @@ fn test_vector_store_persistence_and_reload() {
         .iter()
         .zip(vectors)
         .enumerate()
-        .map(|(i, (_, vector))| EmbeddingVector::new(format!("chunk_{}", i), vector))
+        .map(|(i, (_, vector))| EmbeddingVector::new(format!("chunk_{i}"), vector))
         .collect();
     store.add(evs).unwrap();
     store.save(&path).unwrap();
@@ -153,8 +153,8 @@ fn test_vector_store_persistence_and_reload() {
     let loaded = InMemoryVectorStore::load(&path).unwrap();
     assert_eq!(loaded.len(), 2);
     for i in 0..2 {
-        let original = store.find(&format!("chunk_{}", i)).unwrap();
-        let reloaded = loaded.find(&format!("chunk_{}", i)).unwrap();
+        let original = store.find(&format!("chunk_{i}")).unwrap();
+        let reloaded = loaded.find(&format!("chunk_{i}")).unwrap();
         assert_eq!(original.vector, reloaded.vector);
         assert_eq!(original.chunk_id, reloaded.chunk_id);
     }
@@ -184,7 +184,7 @@ fn test_cosine_similarity_symmetry() {
     for (a, b) in pairs {
         let ab = cosine_similarity(&a, &b);
         let ba = cosine_similarity(&b, &a);
-        assert!((ab - ba).abs() < 1e-6, "Not symmetric: cos(a,b)={}, cos(b,a)={}", ab, ba);
+        assert!((ab - ba).abs() < 1e-6, "Not symmetric: cos(a,b)={ab}, cos(b,a)={ba}");
     }
 }
 
@@ -209,7 +209,7 @@ fn test_top_k_search_correctness() {
         .iter()
         .zip(vectors)
         .enumerate()
-        .map(|(i, (_, vector))| EmbeddingVector::new(format!("chunk_{}", i), vector))
+        .map(|(i, (_, vector))| EmbeddingVector::new(format!("chunk_{i}"), vector))
         .collect();
     store.add(evs).unwrap();
 
@@ -231,14 +231,14 @@ fn test_top_k_search_with_min_score() {
         .iter()
         .zip(vectors)
         .enumerate()
-        .map(|(i, (_, vector))| EmbeddingVector::new(format!("chunk_{}", i), vector))
+        .map(|(i, (_, vector))| EmbeddingVector::new(format!("chunk_{i}"), vector))
         .collect();
     store.add(evs).unwrap();
 
     let query = service.embed(&["alpha function"]).unwrap();
     let results = store.search(&query[0], 10, Some(0.99)).unwrap();
     for (_, score) in &results {
-        assert!(*score >= 0.99, "Score {} below min_score 0.99", score);
+        assert!(*score >= 0.99, "Score {score} below min_score 0.99");
     }
 
     let all_results = store.search(&query[0], 10, None).unwrap();
@@ -352,16 +352,16 @@ fn test_embedding_batch_size_respected() {
     let total_chunks = index_result.stats.total_chunks;
 
     for batch_size in [1, 2, 5, 10, 32, 100] {
-        let vdb_path = tmp.path().join(format!("batch_{}.vdb", batch_size));
+        let vdb_path = tmp.path().join(format!("batch_{batch_size}.vdb"));
         let (embedded, errors, _) =
             run_embedding_with_mock(&index_result, &service, batch_size, &vdb_path);
 
-        assert_eq!(errors, 0, "batch_size={} had errors", batch_size);
-        assert_eq!(embedded, total_chunks, "batch_size={} embedded count mismatch", batch_size);
-        assert!(vdb_path.exists(), "batch_size={} vector store not created", batch_size);
+        assert_eq!(errors, 0, "batch_size={batch_size} had errors");
+        assert_eq!(embedded, total_chunks, "batch_size={batch_size} embedded count mismatch");
+        assert!(vdb_path.exists(), "batch_size={batch_size} vector store not created");
 
         let loaded = InMemoryVectorStore::load(&vdb_path).unwrap();
-        assert_eq!(loaded.len(), total_chunks, "batch_size={} loaded count mismatch", batch_size);
+        assert_eq!(loaded.len(), total_chunks, "batch_size={batch_size} loaded count mismatch");
     }
 }
 

@@ -1,10 +1,10 @@
 //! Integration tests for streaming inference engine (P0-5).
 //!
 //! These tests verify the streaming inference functionality:
-//! 1. StreamEvent definition and channel-based transmission
+//! 1. `StreamEvent` definition and channel-based transmission
 //! 2. `LlmService::infer_stream()` method works correctly
 //! 3. Real-time token delivery during inference
-//! 4. User cancellation mechanism (AtomicBool or channel close)
+//! 4. User cancellation mechanism (`AtomicBool` or channel close)
 //! 5. Thread safety - no panics, no deadlocks
 //! 6. Timing information (first token latency, total generation time)
 
@@ -21,7 +21,7 @@ use std::time::{Duration, Instant};
 fn criterion_1_stream_event_variants() {
     // Verify all StreamEvent variants exist and have correct properties
     let started = StreamEvent::Started;
-    assert!(started.is_terminal() == false);
+    assert!(!started.is_terminal());
     assert!(started.is_success());
 
     let token = StreamEvent::Token("hello".to_string());
@@ -57,17 +57,17 @@ fn criterion_1_stream_event_helper_methods() {
 
     // Test is_terminal
     assert!(!StreamEvent::Started.is_terminal());
-    assert!(!StreamEvent::Token("".into()).is_terminal());
+    assert!(!StreamEvent::Token(String::new()).is_terminal());
     assert!(StreamEvent::Completed.is_terminal());
     assert!(StreamEvent::Cancelled.is_terminal());
-    assert!(StreamEvent::Error("".into()).is_terminal());
+    assert!(StreamEvent::Error(String::new()).is_terminal());
 
     // Test is_success
     assert!(StreamEvent::Started.is_success());
-    assert!(StreamEvent::Token("".into()).is_success());
+    assert!(StreamEvent::Token(String::new()).is_success());
     assert!(StreamEvent::Completed.is_success());
     assert!(!StreamEvent::Cancelled.is_success());
-    assert!(!StreamEvent::Error("".into()).is_success());
+    assert!(!StreamEvent::Error(String::new()).is_success());
 }
 
 // ============================================================================
@@ -138,10 +138,7 @@ fn criterion_2_infer_stream_respects_max_tokens() {
 #[test]
 fn criterion_3_cancellation_via_atomic_bool() {
     let service = MockLlmService::new("This is a long response that should be cancelled");
-    let params = GenerationParams {
-        // Use slow speed to ensure we can cancel mid-generation
-        ..GenerationParams::default()
-    };
+    let params = GenerationParams::default();
     let cancel_flag = Arc::new(AtomicBool::new(true)); // Already cancelled
 
     let rx = service

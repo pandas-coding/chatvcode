@@ -637,7 +637,7 @@ mod tests {
         let vectors: Vec<EmbeddingVector> = (0..100)
             .map(|i| {
                 let angle = (i as f32) * 0.1;
-                EmbeddingVector::new(format!("v{}", i), vec![angle.cos(), angle.sin()])
+                EmbeddingVector::new(format!("v{i}"), vec![angle.cos(), angle.sin()])
             })
             .collect();
         store.add(vectors).unwrap();
@@ -658,7 +658,7 @@ mod tests {
         let mut store = HnswVectorStore::with_params(8, 20, 10);
         let vectors: Vec<EmbeddingVector> = (0..30)
             .map(|i| {
-                EmbeddingVector::new(format!("v{}", i), vec![(i as f32).cos(), (i as f32).sin()])
+                EmbeddingVector::new(format!("v{i}"), vec![(i as f32).cos(), (i as f32).sin()])
             })
             .collect();
         store.add(vectors).unwrap();

@@ -10,7 +10,8 @@
 //! All functions in this module are `unsafe` and should only be used through
 //! the safe wrappers in [`crate::context`].
 
-#![allow(non_camel_case_types, non_snake_case, dead_code, clippy::missing_safety_doc)]
+#![allow(non_camel_case_types, non_snake_case, dead_code)]
+#![allow(clippy::missing_safety_doc)]
 
 use std::ffi::{c_char, c_float, c_int, c_void};
 

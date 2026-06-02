@@ -140,7 +140,7 @@ mod tests {
     fn test_cosine_similarity_general() {
         let a = vec![1.0, 2.0, 3.0];
         let b = vec![4.0, 5.0, 6.0];
-        let dot = 1.0 * 4.0 + 2.0 * 5.0 + 3.0 * 6.0;
+        let dot = 3.0f32.mul_add(6.0, 1.0f32.mul_add(4.0, 2.0 * 5.0));
         let norm_a = (1.0 + 4.0 + 9.0_f32).sqrt();
         let norm_b = (16.0 + 25.0 + 36.0_f32).sqrt();
         let expected = dot / (norm_a * norm_b);

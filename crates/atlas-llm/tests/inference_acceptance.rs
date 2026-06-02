@@ -46,7 +46,7 @@ fn criterion_1_handles_various_prompts() {
 
     for prompt in prompts {
         let response = service.infer(prompt, &params, None).unwrap();
-        assert!(!response.text.is_empty(), "Should return text even for prompt: '{}'", prompt);
+        assert!(!response.text.is_empty(), "Should return text even for prompt: '{prompt}'");
     }
 }
 

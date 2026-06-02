@@ -8,7 +8,7 @@ fn create_test_vectors(count: usize, dimension: usize) -> Vec<EmbeddingVector> {
             let vector: Vec<f32> = (0..dimension)
                 .map(|j| (i * dimension + j) as f32 * 0.01)
                 .collect();
-            EmbeddingVector::new(format!("chunk_{}", i), vector)
+            EmbeddingVector::new(format!("chunk_{i}"), vector)
         })
         .collect()
 }
@@ -16,7 +16,7 @@ fn create_test_vectors(count: usize, dimension: usize) -> Vec<EmbeddingVector> {
 fn bench_save_load(c: &mut Criterion) {
     let mut group = c.benchmark_group("save_load");
 
-    for size in [100, 1000, 5000].iter() {
+    for size in &[100, 1000, 5000] {
         let vectors = create_test_vectors(*size, 128);
 
         group.bench_with_input(BenchmarkId::new("InMemoryVectorStore", size), size, |b, &_size| {
@@ -49,7 +49,7 @@ fn bench_save_load(c: &mut Criterion) {
 fn bench_search(c: &mut Criterion) {
     let mut group = c.benchmark_group("search");
 
-    for size in [1000, 5000, 10000].iter() {
+    for size in &[1000, 5000, 10000] {
         let vectors = create_test_vectors(*size, 128);
         let query: Vec<f32> = (0..128).map(|i| i as f32 * 0.01).collect();
 

@@ -1,10 +1,3 @@
-#![allow(
-    clippy::missing_errors_doc,
-    clippy::must_use_candidate,
-    clippy::missing_const_for_fn,
-    clippy::match_same_arms,
-    clippy::items_after_statements
-)]
 pub mod chunk;
 pub mod parse;
 pub mod parser;

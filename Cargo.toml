@@ -23,3 +23,55 @@ env_logger = "0.11"
 ignore = "0.4"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+
+[workspace.lints.clippy]
+# Pedantic lints that are noisy for this project
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+must_use_candidate = "allow"
+return_self_not_must_use = "allow"
+doc_markdown = "allow"
+too_many_lines = "allow"
+items_after_statements = "allow"
+
+# Cast lints: intentional in FFI/embedding code
+cast_possible_truncation = "allow"
+cast_sign_loss = "allow"
+cast_possible_wrap = "allow"
+cast_precision_loss = "allow"
+cast_lossless = "allow"
+
+# Naming/style lints that conflict with llama.cpp API conventions
+struct_field_names = "allow"
+similar_names = "allow"
+
+# Other stylistic preferences
+option_if_let_else = "allow"
+match_same_arms = "allow"
+single_match_else = "allow"
+format_push_string = "allow"
+wildcard_imports = "allow"
+float_cmp = "allow"
+needless_pass_by_value = "allow"
+missing_const_for_fn = "allow"
+map_unwrap_or = "allow"
+significant_drop_tightening = "allow"
+unused_self = "allow"
+assigning_clones = "allow"
+ptr_as_ptr = "allow"
+used_underscore_binding = "allow"
+
+# These should eventually be fixed but are low priority
+unnecessary_wraps = "allow"
+manual_string_new = "allow"
+unnecessary_struct_initialization = "allow"
+
+# Additional pedantic lints that are noisy
+fn_params_excessive_bools = "allow"
+needless_continue = "allow"
+semicolon_if_nothing_returned = "allow"
+redundant_closure = "allow"
+single_char_pattern = "allow"
+needless_collect = "allow"
+redundant_clone = "allow"
+explicit_iter_loop = "allow"

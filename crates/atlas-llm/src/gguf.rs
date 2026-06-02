@@ -1053,29 +1053,25 @@ mod tests {
 
     #[test]
     fn test_infer_chat_template_mistral() {
-        let mut meta = GgufMetadata::default();
-        meta.architecture = Some("mistral".into());
+        let meta = GgufMetadata { architecture: Some("mistral".into()), ..Default::default() };
         assert_eq!(infer_chat_template(&meta), Some("chatml".into()));
     }
 
     #[test]
     fn test_infer_chat_template_gemma() {
-        let mut meta = GgufMetadata::default();
-        meta.architecture = Some("gemma".into());
+        let meta = GgufMetadata { architecture: Some("gemma".into()), ..Default::default() };
         assert_eq!(infer_chat_template(&meta), Some("gemma".into()));
     }
 
     #[test]
     fn test_infer_chat_template_codellama() {
-        let mut meta = GgufMetadata::default();
-        meta.architecture = Some("codellama".into());
+        let meta = GgufMetadata { architecture: Some("codellama".into()), ..Default::default() };
         assert_eq!(infer_chat_template(&meta), Some("llama3".into()));
     }
 
     #[test]
     fn test_infer_chat_template_unknown_defaults_to_chatml() {
-        let mut meta = GgufMetadata::default();
-        meta.architecture = Some("unknown-arch".into());
+        let meta = GgufMetadata { architecture: Some("unknown-arch".into()), ..Default::default() };
         assert_eq!(infer_chat_template(&meta), Some("chatml".into()));
     }
 
@@ -1086,9 +1082,9 @@ mod tests {
     #[test]
     fn test_format_file_size() -> LlmResult<()> {
         let file = NamedTempFile::new()?;
-        fs::write(file.path(), &vec![0u8; 100])?;
+        fs::write(file.path(), vec![0u8; 100])?;
         let result = format_file_size(file.path());
-        assert!(result.contains("B"), "unexpected: {result}");
+        assert!(result.contains('B'), "unexpected: {result}");
         Ok(())
     }
 
@@ -1103,12 +1099,14 @@ mod tests {
 
     #[test]
     fn test_format_gguf_summary() {
-        let mut meta = GgufMetadata::default();
-        meta.architecture = Some("llama".into());
-        meta.name = Some("Llama-3-8B".into());
-        meta.file_type = Some("Q4_K_M".into());
-        meta.context_length = Some(8192);
-        meta.chat_template = Some("jinja".into());
+        let meta = GgufMetadata {
+            architecture: Some("llama".into()),
+            name: Some("Llama-3-8B".into()),
+            file_type: Some("Q4_K_M".into()),
+            context_length: Some(8192),
+            chat_template: Some("jinja".into()),
+            ..Default::default()
+        };
 
         let summary = format_gguf_summary(Path::new("/test/model.gguf"), &meta);
         assert!(summary.contains("llama"));

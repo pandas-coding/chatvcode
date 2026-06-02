@@ -89,8 +89,7 @@ fn line_end_byte(
 ) -> usize {
     line_offsets
         .get(line_idx)
-        .map(|start| start + lines.get(line_idx).map(|line| line.len()).unwrap_or(0))
-        .unwrap_or(fallback)
+        .map_or(fallback, |start| start + lines.get(line_idx).map_or(0, |line| line.len()))
 }
 
 fn find_rust_chunk_end_line(lines: &[&str], start_line: usize) -> usize {
@@ -190,13 +189,11 @@ fn extract_js_chunks(source: &SourceFile) -> Vec<CodeChunk> {
         let start_byte = source.source_text[..]
             .match_indices(line)
             .find(|(pos, _)| source.source_text[..*pos].lines().count() == line_idx)
-            .map(|(pos, _)| pos)
-            .unwrap_or(0);
+            .map_or(0, |(pos, _)| pos);
 
         let end_byte = source.source_text[start_byte..]
             .find('\n')
-            .map(|n| start_byte + n)
-            .unwrap_or(source.source_text.len());
+            .map_or(source.source_text.len(), |n| start_byte + n);
 
         chunks.push(CodeChunk {
             id: CodeChunk::generate_id(&source.path, kind, name.as_deref(), line_idx),
@@ -253,13 +250,11 @@ fn extract_ts_chunks(source: &SourceFile) -> Vec<CodeChunk> {
         let start_byte = source.source_text[..]
             .match_indices(line)
             .find(|(pos, _)| source.source_text[..*pos].lines().count() == line_idx)
-            .map(|(pos, _)| pos)
-            .unwrap_or(0);
+            .map_or(0, |(pos, _)| pos);
 
         let end_byte = source.source_text[start_byte..]
             .find('\n')
-            .map(|n| start_byte + n)
-            .unwrap_or(source.source_text.len());
+            .map_or(source.source_text.len(), |n| start_byte + n);
 
         chunks.push(CodeChunk {
             id: CodeChunk::generate_id(&source.path, kind, name.as_deref(), line_idx),
@@ -315,7 +310,7 @@ fn extract_python_chunks(source: &SourceFile) -> Vec<CodeChunk> {
 
     for (line_idx, line) in lines.iter().enumerate() {
         let trimmed = line.trim();
-        if trimmed.is_empty() || trimmed.starts_with("#") {
+        if trimmed.is_empty() || trimmed.starts_with('#') {
             continue;
         }
 
@@ -328,13 +323,11 @@ fn extract_python_chunks(source: &SourceFile) -> Vec<CodeChunk> {
         let start_byte = source.source_text[..]
             .match_indices(line)
             .find(|(pos, _)| source.source_text[..*pos].lines().count() == line_idx)
-            .map(|(pos, _)| pos)
-            .unwrap_or(0);
+            .map_or(0, |(pos, _)| pos);
 
         let end_byte = source.source_text[start_byte..]
             .find('\n')
-            .map(|n| start_byte + n)
-            .unwrap_or(source.source_text.len());
+            .map_or(source.source_text.len(), |n| start_byte + n);
 
         chunks.push(CodeChunk {
             id: CodeChunk::generate_id(&source.path, kind, name.as_deref(), line_idx),
@@ -385,13 +378,11 @@ fn extract_php_chunks(source: &SourceFile) -> Vec<CodeChunk> {
         let start_byte = source.source_text[..]
             .match_indices(line)
             .find(|(pos, _)| source.source_text[..*pos].lines().count() == line_idx)
-            .map(|(pos, _)| pos)
-            .unwrap_or(0);
+            .map_or(0, |(pos, _)| pos);
 
         let end_byte = source.source_text[start_byte..]
             .find('\n')
-            .map(|n| start_byte + n)
-            .unwrap_or(source.source_text.len());
+            .map_or(source.source_text.len(), |n| start_byte + n);
 
         chunks.push(CodeChunk {
             id: CodeChunk::generate_id(&source.path, kind, name.as_deref(), line_idx),

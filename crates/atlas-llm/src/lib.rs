@@ -1,28 +1,3 @@
-#![allow(
-    clippy::missing_errors_doc,
-    clippy::missing_panics_doc,
-    clippy::must_use_candidate,
-    clippy::return_self_not_must_use,
-    clippy::cast_possible_truncation,
-    clippy::cast_possible_wrap,
-    clippy::cast_sign_loss,
-    clippy::cast_precision_loss,
-    clippy::cast_lossless,
-    clippy::ptr_as_ptr,
-    clippy::too_many_lines,
-    clippy::match_same_arms,
-    clippy::option_if_let_else,
-    clippy::single_match_else,
-    clippy::format_push_string,
-    clippy::wildcard_imports,
-    clippy::doc_markdown,
-    clippy::float_cmp,
-    clippy::used_underscore_binding,
-    clippy::needless_pass_by_value,
-    clippy::missing_const_for_fn,
-    clippy::map_unwrap_or,
-    clippy::similar_names
-)]
 //! # atlas-llm
 //!
 //! LLM inference engine using `llama.cpp` FFI bindings.

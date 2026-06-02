@@ -1,7 +1,7 @@
 //! Integration tests for real model inference.
 //!
 //! These tests require a GGUF model file in ~/.codeatlas/models/
-//! Run with: cargo test -p atlas-llm --test real_inference -- --ignored
+//! Run with: cargo test -p atlas-llm --test `real_inference` -- --ignored
 
 use atlas_llm::{GenerationParams, LlamaService, LlmConfig, LlmService as _};
 use std::path::PathBuf;
@@ -14,26 +14,20 @@ fn get_test_model_path() -> Option<PathBuf> {
     // Find first .gguf file
     std::fs::read_dir(&dir)
         .ok()?
-        .filter_map(|e| e.ok())
-        .find(|e| {
-            e.path()
-                .extension()
-                .map(|ext| ext == "gguf")
-                .unwrap_or(false)
-        })
+        .filter_map(std::result::Result::ok)
+        .find(|e| e.path().extension().is_some_and(|ext| ext == "gguf"))
         .map(|e| e.path())
 }
 
-/// Run with: cargo test -p atlas-llm --test real_inference -- --ignored
+/// Run with: cargo test -p atlas-llm --test `real_inference` -- --ignored
 #[test]
 #[ignore]
 fn test_real_model_inference() {
-    let model_path = match get_test_model_path() {
-        Some(p) => p,
-        None => {
-            eprintln!("No GGUF model found in ~/.codeatlas/models/, skipping test");
-            return;
-        }
+    let model_path = if let Some(p) = get_test_model_path() {
+        p
+    } else {
+        eprintln!("No GGUF model found in ~/.codeatlas/models/, skipping test");
+        return;
     };
 
     println!("Using model: {}", model_path.display());
@@ -86,12 +80,11 @@ fn test_real_model_inference() {
 #[test]
 #[ignore] // Run with: cargo test -p atlas-llm --test real_inference -- --ignored
 fn test_real_model_with_different_params() {
-    let model_path = match get_test_model_path() {
-        Some(p) => p,
-        None => {
-            eprintln!("No GGUF model found, skipping test");
-            return;
-        }
+    let model_path = if let Some(p) = get_test_model_path() {
+        p
+    } else {
+        eprintln!("No GGUF model found, skipping test");
+        return;
     };
 
     atlas_llm::init();

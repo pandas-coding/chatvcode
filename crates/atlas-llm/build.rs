@@ -1,4 +1,3 @@
-#![allow(clippy::too_many_lines)]
 /// Build script for atlas-llm.
 ///
 /// Compiles `llama.cpp` from `third_party/llama.cpp` using `CMake` and
@@ -13,6 +12,7 @@
 /// - `LLAMA_METAL=1` — enable Metal acceleration (macOS)
 /// - `LLAMA_NATIVE=1` — enable `-march=native` optimizations
 /// - `LLAMA_DEBUG=1` — build in debug mode
+/// - `LLAMA_CLEAN_BUILD=1` — force a clean `CMake` rebuild (removes cache)
 ///
 /// # Feature Flags
 ///
@@ -21,6 +21,22 @@
 /// - `vulkan` → `LLAMA_VULKAN`
 /// - `metal` → `LLAMA_METAL`
 ///
+/// # Why this build script is slow and how we mitigate it
+///
+/// llama.cpp is a large C/C++ project. Building it from source via `CMake` can
+/// take several minutes. On Windows the situation is worse because `CMake`
+/// generates `MSBuild` / VS project files that are slow to invoke.
+///
+/// Key mitigations:
+/// 1. Fixed build directory — avoids full rebuilds on every rust-analyzer
+///    restart (the old code used `std::process::id()` which changed every
+///    time, trashing the `CMake` cache).
+/// 2. Explicit OFF flags for disabled backends — prevents `CMake` from
+///    auto-detecting CUDA/Vulkan toolchains and compiling GPU kernels
+///    even when the user did not request them.
+/// 3. Narrow `rerun-if-changed` — only watches key source files, not the
+///    entire `third_party/llama.cpp` tree (which includes `.git/` and
+///    thousands of CUDA/Vulkan source files that trigger spurious rebuilds).
 use std::env;
 use std::path::{Path, PathBuf};
 
@@ -93,6 +109,12 @@ fn main() {
         .map(|v| v == "1")
         .unwrap_or(cfg!(feature = "metal"));
 
+    // Explicitly disable GPU backends that are not requested.  CMake's
+    // `option(GGML_CUDA "..." OFF)` defaults to OFF, but if the CUDA
+    // Toolkit or Vulkan SDK is installed on the system, CMake's auto-
+    // detection in ggml-cuda/CMakeLists.txt and ggml-vulkan/CMakeLists.txt
+    // can still drag in nvrtc/cicc and vulkan-shaders-gen.  Passing OFF
+    // explicitly makes the intent unambiguous.
     if use_cuda {
         println!("cargo:warning=Enabling CUDA acceleration for llama.cpp");
         config.define("GGML_CUDA", "ON");
@@ -114,12 +136,20 @@ fn main() {
                 env::var("LLAMA_CUDA_FLAGS").unwrap_or_else(|_| "--diag-suppress=177".to_string());
             config.define("CMAKE_CUDA_FLAGS", &cuda_flags);
         }
+    } else {
+        // Explicitly OFF — prevents CMake from auto-detecting CUDA Toolkit
+        // and invoking nvidia cicc / nvrtc when we don't need it.
+        config.define("GGML_CUDA", "OFF");
     }
 
     // Vulkan is cross-platform (Windows, Linux, Android)
     if use_vulkan {
         println!("cargo:warning=Enabling Vulkan acceleration for llama.cpp");
         config.define("GGML_VULKAN", "ON");
+    } else {
+        // Explicitly OFF — prevents CMake from building vulkan-shaders-gen
+        // when the Vulkan SDK is installed but the user did not request it.
+        config.define("GGML_VULKAN", "OFF");
     }
 
     // Metal is macOS-only
@@ -147,12 +177,22 @@ fn main() {
     // On Windows, CMake's ExternalProject (vulkan-shaders-gen) creates very deep
     // directory trees that can exceed MAX_PATH (260 chars). Build in a short temp
     // directory to avoid this.
+    //
+    // CRITICAL: use a *fixed* directory name (not std::process::id()). The old
+    // code used the PID in the path, which caused two problems:
+    //   1. Every rust-analyzer restart got a new PID → new build dir → CMake
+    //      reconfigured from scratch (10+ seconds just for configure, plus a
+    //      full native compilation pass).
+    //   2. Because the `cargo:rustc-link-search` paths contained the PID,
+    //      Cargo computed a different hash for each invocation, invalidating
+    //      the build graph and forcing a cascade rebuild of every downstream
+    //      crate (atlas-core, atlas-parser, atlas-vdb, atlas-cli).
     let build_dir = if cfg!(target_os = "windows") {
-        // Use a short but unique temp dir per build-script invocation.
-        // A fixed shared temp dir can cause stale CMake cache / parallel build
-        // interference, which leads to misleading compiler-detection failures.
-        let short = std::env::temp_dir().join(format!("atlas-llm-cmake-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&short);
+        let short = std::env::temp_dir().join("atlas-llm-cmake");
+        // Only remove the dir when a clean build is requested.
+        if env::var("LLAMA_CLEAN_BUILD").is_ok_and(|v| v == "1") {
+            let _ = std::fs::remove_dir_all(&short);
+        }
         println!("cargo:warning=Using CMake build dir: {}", short.display());
         config.out_dir(&short);
         short
@@ -241,9 +281,26 @@ fn main() {
         println!("cargo:rustc-link-lib=dl");
     }
 
-    // Re-run build.rs if third_party/llama.cpp changes
-    println!("cargo:rerun-if-changed={}", third_party.display());
-    println!("cargo:rerun-if-changed=build.rs");
+    // Re-run build.rs only when key source files change.
+    // We intentionally do NOT watch the entire `third_party/llama.cpp` tree:
+    //   - It contains ~3000 files including .git/ (34 MB of objects that
+    //     change on every `git fetch` / `git status` refresh).
+    //   - It contains 256 *.cu and 100+ Vulkan shader files that trigger
+    //     spurious rebuilds even when GGML_CUDA=OFF / GGML_VULKAN=OFF.
+    // Instead we watch only the CMake entry-points that affect the build
+    // output.  A full clean rebuild can be forced with `LLAMA_CLEAN_BUILD=1`.
+    let cmake_lists = third_party.join("CMakeLists.txt");
+    let ggml_cmake = third_party.join("ggml/CMakeLists.txt");
+    let ggml_src_cmake = third_party.join("ggml/src/CMakeLists.txt");
+    let llama_src_cmake = third_party.join("src/CMakeLists.txt");
+    let build_script = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap()).join("build.rs");
+
+    println!("cargo:rerun-if-changed={}", cmake_lists.display());
+    println!("cargo:rerun-if-changed={}", ggml_cmake.display());
+    println!("cargo:rerun-if-changed={}", ggml_src_cmake.display());
+    println!("cargo:rerun-if-changed={}", llama_src_cmake.display());
+    println!("cargo:rerun-if-changed={}", build_script.display());
+
     println!("cargo:rerun-if-env-changed=LLAMA_CUDA");
     println!("cargo:rerun-if-env-changed=LLAMA_CUDA_ARCH");
     println!("cargo:rerun-if-env-changed=LLAMA_CUDA_FLAGS");
@@ -251,4 +308,5 @@ fn main() {
     println!("cargo:rerun-if-env-changed=LLAMA_METAL");
     println!("cargo:rerun-if-env-changed=LLAMA_NATIVE");
     println!("cargo:rerun-if-env-changed=LLAMA_DEBUG");
+    println!("cargo:rerun-if-env-changed=LLAMA_CLEAN_BUILD");
 }

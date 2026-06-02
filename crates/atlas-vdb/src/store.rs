@@ -955,7 +955,7 @@ mod tests {
 
         let results = store.search(&[1.0, 0.0, 0.0], 10, Some(0.9)).unwrap();
         for (_, score) in &results {
-            assert!(*score >= 0.9, "Score {} below threshold 0.9", score);
+            assert!(*score >= 0.9, "Score {score} below threshold 0.9");
         }
     }
 
@@ -1059,12 +1059,12 @@ mod tests {
     fn test_add_batch_preserves_order() {
         let mut store = InMemoryVectorStore::new();
         let vectors: Vec<EmbeddingVector> = (0..5)
-            .map(|i| make_vector(&format!("c{}", i), vec![i as f32, 0.0, 0.0]))
+            .map(|i| make_vector(&format!("c{i}"), vec![i as f32, 0.0, 0.0]))
             .collect();
         store.add(vectors).unwrap();
         assert_eq!(store.len(), 5);
         for i in 0..5 {
-            let found = store.find(&format!("c{}", i)).unwrap();
+            let found = store.find(&format!("c{i}")).unwrap();
             assert_eq!(found.vector, vec![i as f32, 0.0, 0.0]);
         }
     }
@@ -1074,7 +1074,7 @@ mod tests {
         let mut store = InMemoryVectorStore::new();
         let v1 = make_vector("chunk_a", vec![1.0, 2.0, 3.0]);
         let v2 = make_vector("chunk_b", vec![4.0, 5.0, 6.0]);
-        store.add(vec![v1.clone(), v2.clone()]).unwrap();
+        store.add(vec![v1, v2]).unwrap();
 
         let found_a = store.find("chunk_a").unwrap();
         assert_eq!(found_a.chunk_id, "chunk_a");
@@ -1098,7 +1098,7 @@ mod tests {
         let mut vectors = Vec::with_capacity(count);
         for i in 0..count {
             let vals: Vec<f32> = (0..dim).map(|j| (i * dim + j) as f32 * 0.01).collect();
-            vectors.push(make_vector(&format!("vec_{}", i), vals));
+            vectors.push(make_vector(&format!("vec_{i}"), vals));
         }
         store.add(vectors).unwrap();
         assert_eq!(store.len(), count);
@@ -1109,7 +1109,7 @@ mod tests {
         assert_eq!(loaded.dimension(), dim);
 
         for i in 0..count {
-            let found = loaded.find(&format!("vec_{}", i)).unwrap();
+            let found = loaded.find(&format!("vec_{i}")).unwrap();
             let expected: Vec<f32> = (0..dim).map(|j| (i * dim + j) as f32 * 0.01).collect();
             assert_eq!(found.vector, expected);
         }

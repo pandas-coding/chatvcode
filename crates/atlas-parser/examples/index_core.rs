@@ -1,4 +1,4 @@
-//! Example: End-to-end indexing tests using atlas_parser + atlas_core.
+//! Example: End-to-end indexing tests using `atlas_parser` + `atlas_core`.
 //!
 //! This example exercises the full indexing pipeline with real tree-sitter
 //! parsing, moved here from `atlas-core/tests/index.rs` to break the cyclic
@@ -443,7 +443,7 @@ fn index_large_file_partial_read() {
 
     let mut big_content = String::new();
     for i in 0..2000 {
-        big_content.push_str(&format!("fn func_{}() {{}}\n", i));
+        big_content.push_str(&format!("fn func_{i}() {{}}\n"));
     }
     fs::write(root.join("big.rs"), &big_content).unwrap();
 
@@ -467,7 +467,7 @@ fn index_chunk_split_threshold() {
 
     let mut long_code = String::from("fn big() {\n");
     for i in 0..100 {
-        long_code.push_str(&format!("    let x{} = {};\n\n", i, i));
+        long_code.push_str(&format!("    let x{i} = {i};\n\n"));
     }
     long_code.push_str("}\n");
     fs::write(root.join("big_fn.rs"), &long_code).unwrap();
@@ -511,10 +511,8 @@ fn index_incremental_reindexes_changed_files() {
     fs::create_dir_all(root.join("src")).unwrap();
     fs::write(root.join("src/main.rs"), "fn main() {}").unwrap();
 
-    let options = IndexOptions {
-        incremental_state_path: Some(state_path.clone()),
-        ..IndexOptions::default()
-    };
+    let options =
+        IndexOptions { incremental_state_path: Some(state_path), ..IndexOptions::default() };
 
     let result1 = index_path_with_options(root, &parse_source, &options).unwrap();
     assert_eq!(result1.stats.parsed_files, 1);

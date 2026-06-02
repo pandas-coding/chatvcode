@@ -561,10 +561,10 @@ mod tests {
     #[test]
     fn test_stream_event_is_terminal() {
         assert!(!StreamEvent::Started.is_terminal());
-        assert!(!StreamEvent::Token("".into()).is_terminal());
+        assert!(!StreamEvent::Token(String::new()).is_terminal());
         assert!(StreamEvent::Completed.is_terminal());
         assert!(StreamEvent::Cancelled.is_terminal());
-        assert!(StreamEvent::Error("".into()).is_terminal());
+        assert!(StreamEvent::Error(String::new()).is_terminal());
     }
 
     #[test]
@@ -573,7 +573,7 @@ mod tests {
         assert!(StreamEvent::Token("test".into()).is_token());
         assert!(!StreamEvent::Completed.is_token());
         assert!(!StreamEvent::Cancelled.is_token());
-        assert!(!StreamEvent::Error("".into()).is_token());
+        assert!(!StreamEvent::Error(String::new()).is_token());
     }
 
     #[test]
@@ -582,14 +582,14 @@ mod tests {
         assert_eq!(StreamEvent::Started.as_token(), None);
         assert_eq!(StreamEvent::Completed.as_token(), None);
         assert_eq!(StreamEvent::Cancelled.as_token(), None);
-        assert_eq!(StreamEvent::Error("".into()).as_token(), None);
+        assert_eq!(StreamEvent::Error(String::new()).as_token(), None);
     }
 
     #[test]
     fn test_stream_event_as_error() {
         assert_eq!(StreamEvent::Error("test err".into()).as_error(), Some("test err"));
         assert_eq!(StreamEvent::Started.as_error(), None);
-        assert_eq!(StreamEvent::Token("".into()).as_error(), None);
+        assert_eq!(StreamEvent::Token(String::new()).as_error(), None);
         assert_eq!(StreamEvent::Completed.as_error(), None);
         assert_eq!(StreamEvent::Cancelled.as_error(), None);
     }
@@ -597,10 +597,10 @@ mod tests {
     #[test]
     fn test_stream_event_is_success() {
         assert!(StreamEvent::Started.is_success());
-        assert!(StreamEvent::Token("".into()).is_success());
+        assert!(StreamEvent::Token(String::new()).is_success());
         assert!(StreamEvent::Completed.is_success());
         assert!(!StreamEvent::Cancelled.is_success());
-        assert!(!StreamEvent::Error("".into()).is_success());
+        assert!(!StreamEvent::Error(String::new()).is_success());
     }
 
     #[test]

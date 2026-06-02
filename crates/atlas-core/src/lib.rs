@@ -1,16 +1,3 @@
-#![allow(
-    clippy::missing_errors_doc,
-    clippy::must_use_candidate,
-    clippy::return_self_not_must_use,
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    clippy::cast_possible_wrap,
-    clippy::too_many_lines,
-    clippy::match_same_arms,
-    clippy::option_if_let_else,
-    clippy::missing_const_for_fn,
-    clippy::doc_markdown
-)]
 use std::path::PathBuf;
 use std::time::Instant;
 

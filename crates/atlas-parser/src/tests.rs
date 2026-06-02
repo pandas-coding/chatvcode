@@ -184,7 +184,7 @@ fn rust_mod_chunk_extraction() {
 
 #[test]
 fn rust_multiple_chunks() {
-    let code = r#"
+    let code = r"
 struct Point {
     x: f64,
     y: f64,
@@ -198,7 +198,7 @@ enum Shape {
     Circle(f64),
     Rectangle(f64, f64),
 }
-"#;
+";
     let file = SourceFile::new("test.rs", code);
     let result = parse_source(file).expect("should parse");
 
@@ -233,11 +233,11 @@ enum Shape {
 
 #[test]
 fn rust_nested_function_not_extracted_separately() {
-    let code = r#"
+    let code = r"
 fn outer() {
     fn inner() {}
 }
-"#;
+";
     let file = SourceFile::new("test.rs", code);
     let result = parse_source(file).expect("should parse");
 

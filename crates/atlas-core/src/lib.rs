@@ -3,13 +3,20 @@ use std::time::Instant;
 
 use rayon::prelude::*;
 
+pub use chat::{
+    ChatOptions, ChatResponse, SourceReference, StreamingChatResponse, apply_token_budget,
+    build_metadata_store, build_rag_prompt, chat_with_context, chat_with_context_stream,
+    format_context_snippets,
+};
 pub use error::{AtlasError, AtlasResult, ErrorContext, ErrorKind, ErrorSeverity};
 pub use model::{
-    ChunkKind, ChunkSpan, CodeChunk, EmbeddingOptions, FileLanguage, FileState, IndexOptions,
-    IndexResult, IndexState, IndexStats, ParseResult, SearchOptions, SearchResult, SourceFile,
+    ChunkKind, ChunkMetadata, ChunkMetadataStore, ChunkSpan, CodeChunk, EmbeddingOptions,
+    FileLanguage, FileState, IndexOptions, IndexResult, IndexState, IndexStats, ParseResult,
+    SearchOptions, SearchResult, SourceFile,
 };
 pub use scanner::{ScanOptions, ScanResult, Scanner};
 
+pub mod chat;
 pub mod error;
 pub mod ignore;
 pub mod incremental;
@@ -214,6 +221,20 @@ pub fn index_path_with_options(
         index_result.stats.embedded_chunks = embedded;
         index_result.stats.embedding_errors = emb_errors;
         index_result.stats.embedding_dimension = dimension;
+
+        // Persist chunk metadata store alongside the vector store
+        // so queries can resolve chunk IDs without re-indexing
+        let metadata_store = build_metadata_store(&index_result);
+        let metadata_path = embedding_opts.vector_store_path.with_extension("atmd");
+        if let Err(e) = metadata_store.save(&metadata_path) {
+            log::warn!("Failed to save metadata store: {e}");
+        } else {
+            log::info!(
+                "Saved metadata store with {} entries to {}",
+                metadata_store.len(),
+                metadata_path.display()
+            );
+        }
     }
 
     log::info!(
@@ -402,26 +423,66 @@ pub fn search_with_service(
         return Ok(Vec::new());
     }
 
-    log::info!("Found {} candidate results, re-indexing to resolve chunk info", raw_results.len());
+    log::info!("Found {} candidate results, resolving chunk info", raw_results.len());
 
-    let index_result = index_path(path, parser)?;
-    let chunk_map: std::collections::HashMap<String, CodeChunk> = index_result
-        .files
-        .iter()
-        .flat_map(|f| f.chunks.iter())
-        .map(|c| (c.id.clone(), c.clone()))
-        .collect();
+    // Try to load the metadata store for fast chunk resolution (no re-indexing)
+    let metadata_path = options.vector_store_path.with_extension("atmd");
+    let metadata_store = ChunkMetadataStore::load_or_new(&metadata_path);
 
-    let mut results: Vec<SearchResult> = raw_results
-        .into_iter()
-        .filter_map(|(chunk_id, score)| {
-            chunk_map.get(&chunk_id).map(|chunk| SearchResult {
-                chunk_id,
-                score,
-                chunk: chunk.clone(),
+    let mut results: Vec<SearchResult> = if !metadata_store.is_empty() {
+        // Fast path: resolve chunk IDs from persistent metadata store
+        log::info!(
+            "Resolved {} chunks from metadata store ({})",
+            raw_results.len(),
+            metadata_path.display()
+        );
+        raw_results
+            .into_iter()
+            .filter_map(|(chunk_id, score)| {
+                metadata_store.get(&chunk_id).map(|meta| {
+                    let chunk = CodeChunk {
+                        id: meta.chunk_id.clone(),
+                        file_path: meta.file_path.clone(),
+                        language: FileLanguage::from_extension(&meta.language),
+                        kind: meta.kind,
+                        symbol_name: meta.symbol_name.clone(),
+                        span: ChunkSpan::new(
+                            meta.start_byte,
+                            meta.end_byte,
+                            meta.start_line.saturating_sub(1), // Convert back to 0-indexed
+                            meta.end_line.saturating_sub(1),
+                        ),
+                        source_text: meta.source_text.clone(),
+                    };
+                    SearchResult { chunk_id, score, chunk }
+                })
             })
-        })
-        .collect();
+            .collect()
+    } else {
+        // Fallback: re-index the project to resolve chunk IDs
+        log::warn!(
+            "Metadata store not found at {}, falling back to re-indexing",
+            metadata_path.display()
+        );
+        let index_result = index_path(path, parser)?;
+        let chunk_map: std::collections::HashMap<String, CodeChunk> = index_result
+            .files
+            .iter()
+            .flat_map(|f| f.chunks.iter())
+            .map(|c| (c.id.clone(), c.clone()))
+            .collect();
+
+        raw_results
+            .into_iter()
+            .filter_map(|(chunk_id, score)| {
+                chunk_map.get(&chunk_id).map(|chunk| SearchResult {
+                    chunk_id,
+                    score,
+                    chunk: chunk.clone(),
+                })
+            })
+            .collect()
+    };
 
     results.sort_by(|a, b| {
         b.score

@@ -154,7 +154,7 @@ impl ChunkSpan {
 ///
 /// Each variant represents a distinct syntactic construct such as a function,
 /// struct, class, etc.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum ChunkKind {
     /// Function or method definition.
     Function,
@@ -623,6 +623,188 @@ pub struct SearchResult {
     pub score: f32,
     /// The code chunk that matched the query.
     pub chunk: CodeChunk,
+}
+
+// ---------------------------------------------------------------------------
+// Chunk metadata store (persistent chunk_id → metadata mapping)
+// ---------------------------------------------------------------------------
+
+/// Persistent metadata for a single code chunk.
+///
+/// Stored separately from the vector store to enable fast chunk resolution
+/// during the query/search phase without re-indexing the entire codebase.
+/// This type is serialized to/deserialized from JSON.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct ChunkMetadata {
+    /// Unique chunk identifier (same as `CodeChunk::id`).
+    pub chunk_id: String,
+    /// Path to the source file containing this chunk.
+    pub file_path: PathBuf,
+    /// Programming language name (e.g., "rust", "python").
+    pub language: String,
+    /// Type of code construct this chunk represents.
+    pub kind: ChunkKind,
+    /// Extracted symbol name (e.g., function name), if available.
+    pub symbol_name: Option<String>,
+    /// Starting line number (1-indexed).
+    pub start_line: usize,
+    /// Ending line number (1-indexed, inclusive).
+    pub end_line: usize,
+    /// Starting byte offset in the source file.
+    pub start_byte: usize,
+    /// Ending byte offset (exclusive) in the source file.
+    pub end_byte: usize,
+    /// The source code text of this chunk.
+    pub source_text: String,
+}
+
+/// A persistent store mapping `chunk_id` → `ChunkMetadata`.
+///
+/// This store enables fast lookup of chunk metadata during the search/query
+/// phase without re-indexing the codebase. It is saved alongside the vector
+/// store (`.atmd` file) and loaded on demand.
+///
+/// # Persistence
+///
+/// The store uses a stable JSON format with a version field for forward
+/// compatibility. Entries are keyed by chunk ID.
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+pub struct ChunkMetadataStore {
+    /// Store format version for forward compatibility.
+    pub version: u32,
+    /// Entries keyed by chunk ID.
+    pub entries: std::collections::HashMap<String, ChunkMetadata>,
+}
+
+impl ChunkMetadataStore {
+    /// Current store format version.
+    pub const CURRENT_VERSION: u32 = 1;
+
+    /// Creates an empty metadata store.
+    #[must_use]
+    pub fn new() -> Self {
+        Self { version: Self::CURRENT_VERSION, entries: std::collections::HashMap::new() }
+    }
+
+    /// Returns the number of metadata entries.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    /// Returns `true` if the store is empty.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    /// Gets a metadata entry by chunk ID.
+    #[must_use]
+    pub fn get(&self, chunk_id: &str) -> Option<&ChunkMetadata> {
+        self.entries.get(chunk_id)
+    }
+
+    /// Inserts a metadata entry.
+    pub fn insert(&mut self, meta: ChunkMetadata) {
+        self.entries.insert(meta.chunk_id.clone(), meta);
+    }
+
+    /// Loads a metadata store from a JSON file.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the file cannot be read or the JSON is invalid.
+    pub fn load(path: &Path) -> crate::AtlasResult<Self> {
+        let text = std::fs::read_to_string(path).map_err(|e| {
+            crate::AtlasError::io(format!("Failed to read metadata store: {e}"))
+                .with_context(
+                    crate::ErrorContext::default()
+                        .with_operation("load_metadata_store")
+                        .with_path(path),
+                )
+                .with_source(e.to_string())
+        })?;
+        let store: Self = serde_json::from_str(&text).map_err(|e| {
+            crate::AtlasError::internal(format!("Failed to parse metadata store: {e}"))
+                .with_context(
+                    crate::ErrorContext::default()
+                        .with_operation("load_metadata_store")
+                        .with_path(path),
+                )
+                .with_source(e.to_string())
+        })?;
+        Ok(store)
+    }
+
+    /// Saves the metadata store to a JSON file.
+    ///
+    /// Creates parent directories if they don't exist.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the file cannot be written.
+    pub fn save(&self, path: &Path) -> crate::AtlasResult<()> {
+        let text = serde_json::to_string_pretty(self).map_err(|e| {
+            crate::AtlasError::internal(format!("Failed to serialize metadata store: {e}"))
+                .with_context(
+                    crate::ErrorContext::default()
+                        .with_operation("save_metadata_store")
+                        .with_path(path),
+                )
+                .with_source(e.to_string())
+        })?;
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| {
+                crate::AtlasError::io(format!("Failed to create metadata directory: {e}"))
+                    .with_context(
+                        crate::ErrorContext::default()
+                            .with_operation("save_metadata_store")
+                            .with_path(parent),
+                    )
+                    .with_source(e.to_string())
+            })?;
+        }
+        std::fs::write(path, text).map_err(|e| {
+            crate::AtlasError::io(format!("Failed to write metadata store: {e}"))
+                .with_context(
+                    crate::ErrorContext::default()
+                        .with_operation("save_metadata_store")
+                        .with_path(path),
+                )
+                .with_source(e.to_string())
+        })?;
+        Ok(())
+    }
+
+    /// Loads a metadata store, returning an empty store if the file
+    /// does not exist.
+    pub fn load_or_new(path: &Path) -> Self {
+        if path.exists() {
+            Self::load(path).unwrap_or_else(|e| {
+                log::warn!("Failed to load metadata store from {}: {e}", path.display());
+                Self::new()
+            })
+        } else {
+            Self::new()
+        }
+    }
+}
+
+impl From<&CodeChunk> for ChunkMetadata {
+    fn from(chunk: &CodeChunk) -> Self {
+        Self {
+            chunk_id: chunk.id.clone(),
+            file_path: chunk.file_path.clone(),
+            language: chunk.language.to_string(),
+            kind: chunk.kind,
+            symbol_name: chunk.symbol_name.clone(),
+            start_line: chunk.span.start_line + 1, // Convert 0-indexed to 1-indexed
+            end_line: chunk.span.end_line + 1,
+            start_byte: chunk.span.start_byte,
+            end_byte: chunk.span.end_byte,
+            source_text: chunk.source_text.clone(),
+        }
+    }
 }
 
 #[cfg(test)]

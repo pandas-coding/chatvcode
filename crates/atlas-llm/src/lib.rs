@@ -54,8 +54,8 @@ pub use service::{
     LlamaService, LlmService, MockLlmService, auto_discover_model, dedent, default_model_dir,
 };
 pub use types::{
-    ChatMessage, ChatTemplate, GenerationParams, InferenceResponse, LlmConfig, ModelInfo,
-    StopReason, StreamEvent, TokenUsage,
+    ChatMessage, ChatPromptBuilder, ChatSession, ChatTemplate, GenerationParams, InferenceResponse,
+    LlmConfig, ModelInfo, StopReason, StreamEvent, TokenUsage,
 };
 
 /// Registered backend information discovered from ggml/llama.cpp.
@@ -148,6 +148,8 @@ mod tests {
         let _params = GenerationParams::default();
         let _msg = ChatMessage::user("test");
         let _template = ChatTemplate::Auto;
+        let _builder = ChatPromptBuilder::new(ChatTemplate::ChatML);
+        let _session = ChatSession::new(ChatTemplate::Auto);
     }
 
     #[test]

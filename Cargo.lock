@@ -120,12 +120,16 @@ version = "0.1.0"
 dependencies = [
  "assert_cmd",
  "atlas-core",
+ "atlas-llm",
  "atlas-parser",
  "atlas-vdb",
  "clap",
  "env_logger",
  "log",
+ "num_cpus",
  "predicates",
+ "serde",
+ "serde_json",
  "tempfile",
 ]
 

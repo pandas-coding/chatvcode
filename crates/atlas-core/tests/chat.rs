@@ -671,11 +671,11 @@ fn test_chat_options_default_paths() {
     // Default path resolution
     assert_eq!(
         opts.resolve_vector_store_path(),
-        PathBuf::from("/tmp/myproject/.codeatlas/vectors.atvs")
+        PathBuf::from("/tmp/myproject/.atlas/vectors.vdb")
     );
     assert_eq!(
         opts.resolve_metadata_store_path(),
-        PathBuf::from("/tmp/myproject/.codeatlas/chunks.atmd")
+        PathBuf::from("/tmp/myproject/.atlas/vectors.atmd")
     );
 }
 

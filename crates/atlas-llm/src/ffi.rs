@@ -367,6 +367,15 @@ unsafe extern "C" {
     pub fn llama_get_logits(ctx: *mut llama_context) -> *mut c_float;
     pub fn llama_get_logits_ith(ctx: *mut llama_context, i: i32) -> *mut c_float;
 
+    // ---- Embeddings ----
+    pub fn llama_get_embeddings(ctx: *mut llama_context) -> *const c_float;
+    pub fn llama_get_embeddings_ith(ctx: *mut llama_context, i: i32) -> *const c_float;
+    pub fn llama_n_embd(model: *const llama_model) -> i32;
+
+    // ---- Memory management ----
+    pub fn llama_get_memory(ctx: *const llama_context) -> *mut llama_memory_i;
+    pub fn llama_memory_clear(mem: *mut llama_memory_i, data: bool);
+
     // ---- Sampler ----
     pub fn llama_sampler_chain_init(params: llama_sampler_chain_params) -> *mut llama_sampler;
     pub fn llama_sampler_chain_add(chain: *mut llama_sampler, smpl: *mut llama_sampler);

@@ -77,7 +77,13 @@ impl LlamaModel {
         &self.info
     }
 
-    /// Returns the raw C pointer (for use by `LlamaContext`).
+    /// Returns the embedding dimension of the model.
+    #[must_use]
+    pub fn n_embd(&self) -> i32 {
+        unsafe { ffi::llama_model_n_embd(self.ptr) }
+    }
+
+    /// Returns the raw C pointer (for use by `LlamaContext` and `LlamaEmbeddingContext`).
     pub(crate) const fn as_ptr(&self) -> *mut ffi::llama_model {
         self.ptr
     }
@@ -822,5 +828,216 @@ impl Drop for LlamaContext {
             unsafe { ffi::llama_free(self.ctx) };
             self.ctx = ptr::null_mut();
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Embedding Context
+// ---------------------------------------------------------------------------
+
+/// A context for generating text embeddings from a loaded GGUF model.
+///
+/// Unlike [`LlamaContext`] which is used for text generation,
+/// this context uses `embeddings = true` in the context parameters,
+/// allowing the model to output embedding vectors via
+/// `llama_get_embeddings()`.
+///
+/// # Usage
+///
+/// ```ignore
+/// let model = LlamaModel::load("model.gguf", 0, true, false)?;
+/// let embed_ctx = LlamaEmbeddingContext::new(Arc::new(model), 512, 4)?;
+/// let embedding = embed_ctx.embed("Hello, world!")?;
+/// println!("Embedding dim: {}", embedding.len());
+/// ```
+pub struct LlamaEmbeddingContext {
+    ctx: *mut ffi::llama_context,
+    model: Arc<LlamaModel>,
+    n_embd: usize,
+}
+
+// SAFETY: We guard access with &mut self on embed(), ensuring exclusive access.
+unsafe impl Send for LlamaEmbeddingContext {}
+unsafe impl Sync for LlamaEmbeddingContext {}
+
+impl LlamaEmbeddingContext {
+    /// Create a new embedding context from a loaded model.
+    ///
+    /// # Arguments
+    ///
+    /// * `model` — Shared reference to a loaded `LlamaModel`
+    /// * `n_ctx` — Context size for the embedding (512 is usually sufficient)
+    /// * `n_threads` — Number of threads for embedding computation
+    pub fn new(model: Arc<LlamaModel>, n_ctx: u32, n_threads: i32) -> LlmResult<Self> {
+        let mut params = unsafe { ffi::llama_context_default_params() };
+        params.n_ctx = n_ctx;
+        params.n_batch = n_ctx; // Use full context as batch
+        params.n_ubatch = n_ctx;
+        params.embeddings = true; // Enable embedding output
+        params.no_perf = false;
+
+        let ctx = unsafe { ffi::llama_init_from_model(model.as_ptr(), params) };
+        if ctx.is_null() {
+            return Err(LlmError::ModelLoadFailed(
+                "Failed to create embedding context. This may be due to insufficient memory.".into(),
+            ));
+        }
+
+        let actual_n_embd = model.n_embd();
+
+        // Set thread count
+        unsafe { ffi::llama_set_n_threads(ctx, n_threads, n_threads) };
+
+        log::info!(
+            "LlamaEmbeddingContext created: n_ctx={n_ctx}, n_embd={actual_n_embd}, threads={n_threads}"
+        );
+
+        Ok(Self {
+            ctx,
+            model,
+            n_embd: actual_n_embd as usize,
+        })
+    }
+
+    /// Get the embedding dimension.
+    #[must_use]
+    pub fn dimension(&self) -> usize {
+        self.n_embd
+    }
+
+    /// Embed a single text string and return its embedding vector.
+    ///
+    /// The returned vector is L2-normalized and has `dimension()` elements.
+    pub fn embed(&mut self, text: &str) -> LlmResult<Vec<f32>> {
+        // Tokenize using the model's vocabulary (same as LlamaContext)
+        let text_c = CString::new(text)
+            .map_err(|_| LlmError::TokenizeFailed("text contains null bytes".into()))?;
+
+        let vocab = unsafe { ffi::llama_model_get_vocab(self.model.ptr) };
+        if vocab.is_null() {
+            return Err(LlmError::TokenizeFailed("model vocabulary is null".into()));
+        }
+
+        // Determine required token buffer size
+        let n = unsafe {
+            ffi::llama_tokenize(
+                vocab,
+                text_c.as_ptr(),
+                text.len() as i32,
+                ptr::null_mut(),
+                0,
+                true,  // add_bos
+                true,  // add_eos
+            )
+        };
+
+        if n == 0 {
+            return Err(LlmError::TokenizeFailed("no tokens produced for embedding input".into()));
+        }
+
+        let max_tokens = if n < 0 { (-n) as usize } else { n as usize };
+        let mut tokens = vec![0i32; max_tokens + 1];
+        let actual = unsafe {
+            ffi::llama_tokenize(
+                vocab,
+                text_c.as_ptr(),
+                text.len() as i32,
+                tokens.as_mut_ptr(),
+                tokens.len() as i32,
+                true,  // add_bos
+                true,  // add_eos
+            )
+        };
+
+        if actual < 0 {
+            return Err(LlmError::TokenizeFailed(format!(
+                "tokenization failed for embedding input (ret={actual})"
+            )));
+        }
+        tokens.truncate(actual as usize);
+
+        // Create batch and compute embeddings
+        let batch =
+            unsafe { ffi::llama_batch_get_one(tokens.as_mut_ptr(), tokens.len() as i32) };
+
+        let ret = unsafe { ffi::llama_decode(self.ctx, batch) };
+        if ret != 0 {
+            return Err(LlmError::Internal(format!(
+                "Embedding decode failed with return code {ret}"
+            )));
+        }
+
+        // Get embeddings (sequence 0)
+        let embd_ptr = unsafe { ffi::llama_get_embeddings_ith(self.ctx, 0) };
+        if embd_ptr.is_null() {
+            return Err(LlmError::Internal(
+                "Failed to get embeddings from context (null pointer)".into(),
+            ));
+        }
+
+        // Copy embeddings to Vec
+        let mut embedding = vec![0.0f32; self.n_embd];
+        unsafe {
+            std::ptr::copy_nonoverlapping(embd_ptr, embedding.as_mut_ptr(), self.n_embd);
+        }
+
+        // L2-normalize
+        let norm: f32 = embedding.iter().map(|x| x * x).sum::<f32>().sqrt();
+        if norm > 0.0 {
+            for val in &mut embedding {
+                *val /= norm;
+            }
+        }
+
+        // Clear KV cache for next embedding
+        unsafe {
+            let mem = ffi::llama_get_memory(self.ctx);
+            ffi::llama_memory_clear(mem, true);
+        }
+
+        Ok(embedding)
+    }
+
+    /// Embed multiple texts in sequence.
+    ///
+    /// Returns embeddings in the same order as the input texts.
+    /// Each embedding vector is L2-normalized.
+    pub fn embed_batch(&mut self, texts: &[&str]) -> LlmResult<Vec<Vec<f32>>> {
+        let mut results = Vec::with_capacity(texts.len());
+        for text in texts {
+            let embedding = self.embed(text)?;
+            results.push(embedding);
+        }
+        Ok(results)
+    }
+
+}
+
+impl Drop for LlamaEmbeddingContext {
+    fn drop(&mut self) {
+        if !self.ctx.is_null() {
+            unsafe { ffi::llama_free(self.ctx) };
+            self.ctx = ptr::null_mut();
+        }
+    }
+}
+
+#[cfg(test)]
+mod embedding_context_tests {
+    use super::*;
+
+    #[test]
+    fn test_llama_model_n_embd_method_exists() {
+        // Verify the n_embd() method exists on LlamaModel
+        fn _assert_n_embd_exists(model: &LlamaModel) -> i32 {
+            model.n_embd()
+        }
+        // This test passes by compiling.
+    }
+
+    #[test]
+    fn test_llama_model_load_nonexistent_fails() {
+        let result = LlamaModel::load(Path::new("/nonexistent/model.gguf"), 0, true, false);
+        assert!(result.is_err());
     }
 }

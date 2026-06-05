@@ -1039,4 +1039,99 @@ mod tests {
 
         assert!(token_count <= 2, "Should not exceed max_tokens");
     }
+
+    // --- LlamaEmbeddingService unit tests ---
+
+    #[test]
+    fn test_llama_embedding_service_from_path_nonexistent() {
+        // Loading from a nonexistent path should fail gracefully
+        let result = LlamaEmbeddingService::from_path(
+            Path::new("/nonexistent/model.gguf"),
+            512,
+            4,
+            0,
+        );
+        assert!(result.is_err(), "Expected error for nonexistent model path");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Llama-based Embedding Service
+// ---------------------------------------------------------------------------
+
+/// A [`atlas_vdb::EmbeddingService`] implementation backed by a GGUF model via `llama.cpp`.
+///
+/// Uses the same GGUF model file as the LLM for inference, but creates
+/// a separate context with `embeddings = true` to extract embedding vectors.
+/// This eliminates the need for a separate ONNX embedding model.
+///
+/// # Example
+///
+/// ```ignore
+/// let model = LlamaModel::load("qwen2.5-coder-7b.gguf", 0, true, false)?;
+/// let service = LlamaEmbeddingService::new(Arc::new(model), 512, 4)?;
+/// let vectors = service.embed(&["Hello, world!"])?;
+/// println!("Embedding dim: {}", service.dimension()); // e.g. 3584
+/// ```
+pub struct LlamaEmbeddingService {
+    embed_ctx: std::sync::Mutex<crate::context::LlamaEmbeddingContext>,
+    dimension: usize,
+}
+
+impl LlamaEmbeddingService {
+    /// Create a new embedding service from a loaded model.
+    ///
+    /// # Arguments
+    ///
+    /// * `model` — Shared reference to a loaded `LlamaModel`
+    /// * `n_ctx` — Context window for embedding (512 is usually sufficient)
+    /// * `n_threads` — Number of threads for embedding computation
+    pub fn new(
+        model: Arc<LlamaModel>,
+        n_ctx: u32,
+        n_threads: i32,
+    ) -> LlmResult<Self> {
+        let dim = model.n_embd() as usize;
+        let embed_ctx = crate::context::LlamaEmbeddingContext::new(model, n_ctx, n_threads)?;
+
+        log::info!(
+            "LlamaEmbeddingService created: dimension={dim}, n_ctx={n_ctx}, threads={n_threads}"
+        );
+
+        Ok(Self {
+            embed_ctx: std::sync::Mutex::new(embed_ctx),
+            dimension: dim,
+        })
+    }
+
+    /// Create a new embedding service by loading a model from disk.
+    ///
+    /// Convenience method that loads the model and creates the embedding context.
+    pub fn from_path(
+        model_path: &Path,
+        n_ctx: u32,
+        n_threads: i32,
+        n_gpu_layers: i32,
+    ) -> LlmResult<Self> {
+        let model = LlamaModel::load(model_path, n_gpu_layers, true, false)?;
+        Self::new(Arc::new(model), n_ctx, n_threads)
+    }
+
+    /// Get the embedding dimension.
+    #[must_use]
+    pub fn dimension(&self) -> usize {
+        self.dimension
+    }
+
+    /// Embed a batch of texts, returning L2-normalized vectors.
+    ///
+    /// Each text is embedded independently using the GGUF model's
+    /// hidden state output. The vectors are L2-normalized for
+    /// cosine similarity search.
+    pub fn embed(&self, texts: &[&str]) -> LlmResult<Vec<Vec<f32>>> {
+        let mut ctx = self.embed_ctx.lock().map_err(|e| {
+            LlmError::Internal(format!("Embedding context lock poisoned: {e}"))
+        })?;
+        ctx.embed_batch(texts)
+    }
 }

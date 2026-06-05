@@ -158,20 +158,22 @@ impl ChatOptions {
 
     /// Resolves the vector store path.
     ///
-    /// If not explicitly set, defaults to `<project_path>/.codeatlas/vectors.atvs`.
+    /// If not explicitly set, defaults to `<project_path>/.atlas/vectors.vdb`.
+    /// This is compatible with the `code-atlas index` default output path.
     pub fn resolve_vector_store_path(&self) -> PathBuf {
         self.vector_store_path
             .clone()
-            .unwrap_or_else(|| self.project_path.join(".codeatlas").join("vectors.atvs"))
+            .unwrap_or_else(|| self.project_path.join(".atlas").join("vectors.vdb"))
     }
 
     /// Resolves the metadata store path.
     ///
-    /// If not explicitly set, defaults to `<project_path>/.codeatlas/chunks.atmd`.
+    /// If not explicitly set, defaults to `<project_path>/.atlas/vectors.atmd`.
+    /// This is compatible with the `code-atlas index` default output path.
     pub fn resolve_metadata_store_path(&self) -> PathBuf {
         self.metadata_store_path
             .clone()
-            .unwrap_or_else(|| self.project_path.join(".codeatlas").join("chunks.atmd"))
+            .unwrap_or_else(|| self.project_path.join(".atlas").join("vectors.atmd"))
     }
 }
 
@@ -888,11 +890,11 @@ mod tests {
         let opts = ChatOptions::new("/tmp/project");
         assert_eq!(
             opts.resolve_vector_store_path(),
-            PathBuf::from("/tmp/project/.codeatlas/vectors.atvs")
+            PathBuf::from("/tmp/project/.atlas/vectors.vdb")
         );
         assert_eq!(
             opts.resolve_metadata_store_path(),
-            PathBuf::from("/tmp/project/.codeatlas/chunks.atmd")
+            PathBuf::from("/tmp/project/.atlas/vectors.atmd")
         );
     }
 

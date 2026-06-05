@@ -43,7 +43,7 @@ pub mod service;
 pub mod types;
 
 // Re-export key types for convenience
-pub use context::{LlamaContext, LlamaModel};
+pub use context::{LlamaContext, LlamaEmbeddingContext, LlamaModel};
 pub use error::{LlmError, LlmResult};
 pub use gguf::{
     GGUF_MAGIC, GgufHeader, GgufMetadata, SUPPORTED_VERSIONS, discover_gguf_models,
@@ -51,7 +51,7 @@ pub use gguf::{
     load_model_safe, pre_validate_model, read_gguf_metadata, scan_model, validate_gguf,
 };
 pub use service::{
-    LlamaService, LlmService, MockLlmService, auto_discover_model, dedent, default_model_dir,
+    LlamaService, LlmService, MockLlmService, LlamaEmbeddingService, auto_discover_model, dedent, default_model_dir,
 };
 pub use types::{
     ChatMessage, ChatPromptBuilder, ChatSession, ChatTemplate, GenerationParams, InferenceResponse,

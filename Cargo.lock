@@ -115,89 +115,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "atlas-cli"
-version = "0.1.0"
-dependencies = [
- "assert_cmd",
- "atlas-core",
- "atlas-llm",
- "atlas-parser",
- "atlas-vdb",
- "clap",
- "env_logger",
- "log",
- "num_cpus",
- "predicates",
- "serde",
- "serde_json",
- "tempfile",
-]
-
-[[package]]
-name = "atlas-core"
-version = "0.1.0"
-dependencies = [
- "atlas-llm",
- "atlas-vdb",
- "clap",
- "ignore",
- "log",
- "rayon",
- "serde",
- "serde_json",
- "tempfile",
-]
-
-[[package]]
-name = "atlas-llm"
-version = "0.1.0"
-dependencies = [
- "cmake",
- "dirs",
- "log",
- "num_cpus",
- "serde",
- "serde_json",
- "tempfile",
-]
-
-[[package]]
-name = "atlas-parser"
-version = "0.1.0"
-dependencies = [
- "atlas-core",
- "atlas-vdb",
- "clap",
- "log",
- "tempfile",
- "tree-sitter",
- "tree-sitter-javascript",
- "tree-sitter-language",
- "tree-sitter-php",
- "tree-sitter-python",
- "tree-sitter-rust",
- "tree-sitter-typescript",
-]
-
-[[package]]
-name = "atlas-vdb"
-version = "0.1.0"
-dependencies = [
- "criterion",
- "dirs",
- "hf-hub",
- "log",
- "lru",
- "ort",
- "rand",
- "rayon",
- "serde",
- "serde_json",
- "tempfile",
- "tokenizers",
-]
-
-[[package]]
 name = "atomic-waker"
 version = "1.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -292,6 +209,89 @@ name = "cfg-if"
 version = "1.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9330f8b2ff13f34540b44e946ef35111825727b38d33286ef986142615121801"
+
+[[package]]
+name = "chatvcode-cli"
+version = "0.1.0"
+dependencies = [
+ "assert_cmd",
+ "chatvcode-core",
+ "chatvcode-llm",
+ "chatvcode-parser",
+ "chatvcode-vdb",
+ "clap",
+ "env_logger",
+ "log",
+ "num_cpus",
+ "predicates",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
+name = "chatvcode-core"
+version = "0.1.0"
+dependencies = [
+ "chatvcode-llm",
+ "chatvcode-vdb",
+ "clap",
+ "ignore",
+ "log",
+ "rayon",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
+name = "chatvcode-llm"
+version = "0.1.0"
+dependencies = [
+ "cmake",
+ "dirs",
+ "log",
+ "num_cpus",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
+name = "chatvcode-parser"
+version = "0.1.0"
+dependencies = [
+ "chatvcode-core",
+ "chatvcode-vdb",
+ "clap",
+ "log",
+ "tempfile",
+ "tree-sitter",
+ "tree-sitter-javascript",
+ "tree-sitter-language",
+ "tree-sitter-php",
+ "tree-sitter-python",
+ "tree-sitter-rust",
+ "tree-sitter-typescript",
+]
+
+[[package]]
+name = "chatvcode-vdb"
+version = "0.1.0"
+dependencies = [
+ "criterion",
+ "dirs",
+ "hf-hub",
+ "log",
+ "lru",
+ "ort",
+ "rand",
+ "rayon",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokenizers",
+]
 
 [[package]]
 name = "ciborium"

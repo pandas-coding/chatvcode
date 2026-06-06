@@ -1,16 +1,16 @@
-# 🗺️ CodeAtlas
+# 🗺️ ChatVCode
 *A lightning-fast, local-first, semantic-aware AI code assistant.*
 
-**CodeAtlas** is a privacy-first AI coding agent that understands your codebase. Unlike cloud-based assistants, CodeAtlas runs entirely on your local machine, utilizing native system programming to provide instant codebase navigation and accurate AI assistance without memory bloat.
+**ChatVCode** is a privacy-first AI coding agent that understands your codebase. Unlike cloud-based assistants, ChatVCode runs entirely on your local machine, utilizing native system programming to provide instant codebase navigation and accurate AI assistance without memory bloat.
 
-## ✨ Why CodeAtlas?
+## ✨ Why ChatVCode?
 * **Local-First & Private:** Your codebase never leaves your machine. 
 * **Zero-Configuration:** Packaged as a single-binary. No Docker, no Python environment, no complex API setups.
 * **Semantic-Aware RAG:** Integrates `tree-sitter` for AST parsing rather than blunt text-chunking, ensuring the LLM receives highly contextualized code chunks.
 * **Peak Performance:** Built with Rust and C++ to utilize multi-core CPU/GPU acceleration, resulting in **10x faster indexing speeds** compared to Python-based implementations.
 
 ## 🏗️ Architecture Overview
-CodeAtlas is designed as a modular system to ensure high maintainability and performance.
+ChatVCode is designed as a modular system to ensure high maintainability and performance.
 
 * **`agent-llm`**: C++ native inference engine utilizing `llama.cpp` for local LLM integration.
 * **`agent-parser`**: AST-based code chunker using `tree-sitter` for logic-preserving code analysis.
@@ -32,34 +32,34 @@ Before building, ensure you have:
 * [Rust toolchain](https://rustup.rs/) (latest stable)
 * [CMake](https://cmake.org/) (for compiling `llama.cpp`)
 * A C++ compiler (GCC/Clang)
-* [GGUF Model](https://huggingface.co/models) (Place your coding model inside `~/.codeatlas/models/`)
+* [GGUF Model](https://huggingface.co/models) (Place your coding model inside `~/.chatvcode/models/`)
 
 ## 📦 Getting Started
 ```bash
 # Clone the repository
-git clone --recursive https://github.com/YOUR_USERNAME/code-atlas.git
-cd code-atlas
+git clone --recursive https://github.com/YOUR_USERNAME/chatvcode.git
+cd chatvcode
 
 # Build the project
 cargo build --release
 
 # Initialize index for your current repository
-./target/release/code-atlas index ./
+./target/release/chatvcode index ./
 
 # Ask a question about your codebase!
-./target/release/code-atlas chat "Explain how the authentication middleware is implemented?"
+./target/release/chatvcode chat "Explain how the authentication middleware is implemented?"
 ```
 
 ## 📂 Directory Structure
 ```text
-code-atlas/
+chatvcode/
 ├── third_party/          # C/C++ dependencies (llama.cpp, tree-sitter, etc.)
 ├── crates/               # Rust modular workspace
-│   ├── atlas-cli/        # CLI & TUI entry point
-│   ├── atlas-core/       # Agent orchestration & RAG pipeline
-│   ├── atlas-parser/     # AST Code chunking engine
-│   ├── atlas-vdb/        # Local Vector DB & ONNX Embeddings
-│   └── atlas-llm/        # FFI LLM Inference wrapper
+│   ├── chatvcode-cli/        # CLI & TUI entry point
+│   ├── chatvcode-core/       # Agent orchestration & RAG pipeline
+│   ├── chatvcode-parser/     # AST Code chunking engine
+│   ├── chatvcode-vdb/        # Local Vector DB & ONNX Embeddings
+│   └── chatvcode-llm/        # FFI LLM Inference wrapper
 └── tests/                # Integration tests
 ```
 

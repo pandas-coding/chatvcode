@@ -8,14 +8,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
-- **项目重命名: `code-atlas` → `chatvcode`**: 由于与开源项目名称撞车，项目名称由 `code-atlas` 更名为 `chatvcode`。涉及以下变更：
-  - CLI 二进制名称由 `code-atlas` 改为 `chatvcode`
-  - 默认数据目录由 `.codeatlas` / `.code-atlas` / `.atlas` 改为 `.chatvcode`
-  - 项目品牌名称由 `CodeAtlas` 改为 `ChatVCode`
-  - Crate 包名由 `atlas-*` 重命名为 `chatvcode-*`：`atlas-cli` → `chatvcode-cli`，`atlas-core` → `chatvcode-core`，`atlas-parser` → `chatvcode-parser`，`atlas-vdb` → `chatvcode-vdb`，`atlas-llm` → `chatvcode-llm`
-  - Crate 目录由 `crates/atlas-*` 重命名为 `crates/chatvcode-*`
-  - Rust 标识符重命名：`AtlasError` → `ChatVCodeError`，`AtlasResult` → `ChatVCodeResult`
-  - 所有文档、帮助文本、测试用例中的引用均已同步更新
+- **Renamed project from `code-atlas` to `chatvcode`**: The project was renamed due to a name conflict with an existing open-source project. Changes include:
+  - CLI binary renamed from `code-atlas` to `chatvcode`
+  - Default data directory changed from `.codeatlas` / `.code-atlas` / `.atlas` to `.chatvcode`
+  - Brand name changed from `CodeAtlas` to `ChatVCode`
+  - Crate package names renamed from `atlas-*` to `chatvcode-*`: `atlas-cli` → `chatvcode-cli`, `atlas-core` → `chatvcode-core`, `atlas-parser` → `chatvcode-parser`, `atlas-vdb` → `chatvcode-vdb`, `atlas-llm` → `chatvcode-llm`
+  - Crate directories renamed from `crates/atlas-*` to `crates/chatvcode-*`
+  - Rust identifiers renamed: `AtlasError` → `ChatVCodeError`, `AtlasResult` → `ChatVCodeResult`
+  - All references in documentation, help text, and test cases updated accordingly
 
 ## [2026-05-29]
 

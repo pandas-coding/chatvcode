@@ -189,10 +189,15 @@ impl LlamaModel {
             "none".to_string()
         } else {
             let vt = unsafe { ffi::llama_vocab_type(vocab) };
-            match vt {
-                ffi::LLAMA_VOCAB_TYPE_SPM => "spm",
-                ffi::LLAMA_VOCAB_TYPE_BPE => "bpe",
-                _ => "other",
+            match ffi::LlamaVocabType::from_i32(vt) {
+                Some(ffi::LlamaVocabType::Spm) => "spm",
+                Some(ffi::LlamaVocabType::Bpe) => "bpe",
+                Some(ffi::LlamaVocabType::None) => "none",
+                Some(ffi::LlamaVocabType::Wpm) => "wpm",
+                Some(ffi::LlamaVocabType::Ugm) => "ugm",
+                Some(ffi::LlamaVocabType::Rwkv) => "rwkv",
+                Some(ffi::LlamaVocabType::Plamo2) => "plamo2",
+                None => "other",
             }
             .to_string()
         };
@@ -336,7 +341,10 @@ impl LlamaContext {
         let mut params = unsafe { ffi::llama_context_default_params() };
         params.n_ctx = n_ctx;
         params.n_batch = n_batch;
-        params.n_ubatch = n_batch;
+        // n_ubatch controls the physical micro-batch size.  Keep it at a
+        // moderate size (512) to limit peak memory; only raise it to n_batch
+        // if n_batch itself is very small.
+        params.n_ubatch = n_batch.min(512);
         // We set the rest to default; they will be auto-adjusted after init
         params.embeddings = false;
         params.no_perf = false;
@@ -854,6 +862,7 @@ pub struct LlamaEmbeddingContext {
     ctx: *mut ffi::llama_context,
     model: Arc<LlamaModel>,
     n_embd: usize,
+    n_ctx: u32,
 }
 
 // SAFETY: We guard access with &mut self on embed(), ensuring exclusive access.
@@ -872,14 +881,16 @@ impl LlamaEmbeddingContext {
         let mut params = unsafe { ffi::llama_context_default_params() };
         params.n_ctx = n_ctx;
         params.n_batch = n_ctx; // Use full context as batch
-        params.n_ubatch = n_ctx;
+        params.n_ubatch = n_ctx.min(512); // Limit physical micro-batch size
         params.embeddings = true; // Enable embedding output
+        params.pooling_type = ffi::LlamaPoolingType::Mean as i32; // Use mean pooling for better embeddings
         params.no_perf = false;
 
         let ctx = unsafe { ffi::llama_init_from_model(model.as_ptr(), params) };
         if ctx.is_null() {
             return Err(LlmError::ModelLoadFailed(
-                "Failed to create embedding context. This may be due to insufficient memory.".into(),
+                "Failed to create embedding context. This may be due to insufficient memory."
+                    .into(),
             ));
         }
 
@@ -892,17 +903,19 @@ impl LlamaEmbeddingContext {
             "LlamaEmbeddingContext created: n_ctx={n_ctx}, n_embd={actual_n_embd}, threads={n_threads}"
         );
 
-        Ok(Self {
-            ctx,
-            model,
-            n_embd: actual_n_embd as usize,
-        })
+        Ok(Self { ctx, model, n_embd: actual_n_embd as usize, n_ctx })
     }
 
     /// Get the embedding dimension.
     #[must_use]
     pub fn dimension(&self) -> usize {
         self.n_embd
+    }
+
+    /// Get the context size.
+    #[must_use]
+    pub fn n_ctx(&self) -> u32 {
+        self.n_ctx
     }
 
     /// Embed a single text string and return its embedding vector.
@@ -926,8 +939,8 @@ impl LlamaEmbeddingContext {
                 text.len() as i32,
                 ptr::null_mut(),
                 0,
-                true,  // add_bos
-                true,  // add_eos
+                true, // add_bos
+                true, // add_eos
             )
         };
 
@@ -944,8 +957,8 @@ impl LlamaEmbeddingContext {
                 text.len() as i32,
                 tokens.as_mut_ptr(),
                 tokens.len() as i32,
-                true,  // add_bos
-                true,  // add_eos
+                true, // add_bos
+                true, // add_eos
             )
         };
 
@@ -956,9 +969,21 @@ impl LlamaEmbeddingContext {
         }
         tokens.truncate(actual as usize);
 
+        // Truncate tokens to fit within the context window.
+        // If the tokenized text exceeds n_ctx, keep only the first n_ctx tokens
+        // so that llama_decode won't fail with GGML_ASSERT(n_tokens_all <= n_batch).
+        let max_tokens = self.n_ctx as usize;
+        if tokens.len() > max_tokens {
+            log::warn!(
+                "Embedding input has {} tokens, truncating to n_ctx={}",
+                tokens.len(),
+                max_tokens
+            );
+            tokens.truncate(max_tokens);
+        }
+
         // Create batch and compute embeddings
-        let batch =
-            unsafe { ffi::llama_batch_get_one(tokens.as_mut_ptr(), tokens.len() as i32) };
+        let batch = unsafe { ffi::llama_batch_get_one(tokens.as_mut_ptr(), tokens.len() as i32) };
 
         let ret = unsafe { ffi::llama_decode(self.ctx, batch) };
         if ret != 0 {
@@ -1003,14 +1028,19 @@ impl LlamaEmbeddingContext {
     /// Returns embeddings in the same order as the input texts.
     /// Each embedding vector is L2-normalized.
     pub fn embed_batch(&mut self, texts: &[&str]) -> LlmResult<Vec<Vec<f32>>> {
-        let mut results = Vec::with_capacity(texts.len());
-        for text in texts {
+        let total = texts.len();
+        let mut results = Vec::with_capacity(total);
+        for (i, text) in texts.iter().enumerate() {
             let embedding = self.embed(text)?;
+            if total > 1 {
+                // Emit per-text progress so user can see the batch is still working
+                log::debug!("Embedded chunk {}/{} ({} tokens)", i + 1, total, embedding.len());
+                eprint!(" {}/{}", i + 1, total);
+            }
             results.push(embedding);
         }
         Ok(results)
     }
-
 }
 
 impl Drop for LlamaEmbeddingContext {

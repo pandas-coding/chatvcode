@@ -39,6 +39,7 @@ pub mod context;
 pub mod error;
 pub mod ffi;
 pub mod gguf;
+pub mod log;
 pub mod service;
 pub mod types;
 
@@ -51,7 +52,8 @@ pub use gguf::{
     load_model_safe, pre_validate_model, read_gguf_metadata, scan_model, validate_gguf,
 };
 pub use service::{
-    LlamaService, LlmService, MockLlmService, LlamaEmbeddingService, auto_discover_model, dedent, default_model_dir,
+    LlamaEmbeddingService, LlamaService, LlmService, MockLlmService, auto_discover_model, dedent,
+    default_model_dir,
 };
 pub use types::{
     ChatMessage, ChatPromptBuilder, ChatSession, ChatTemplate, GenerationParams, InferenceResponse,

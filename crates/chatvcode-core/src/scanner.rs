@@ -235,14 +235,16 @@ impl Scanner {
             let entry = match entry {
                 Ok(entry) => entry,
                 Err(e) => {
-                    let err =
-                        ChatVCodeError::io(format!("Failed to read entry in {}: {e}", dir.display()))
-                            .with_context(
-                                ErrorContext::default()
-                                    .with_operation("scan")
-                                    .with_path(dir),
-                            )
-                            .with_source(e.to_string());
+                    let err = ChatVCodeError::io(format!(
+                        "Failed to read entry in {}: {e}",
+                        dir.display()
+                    ))
+                    .with_context(
+                        ErrorContext::default()
+                            .with_operation("scan")
+                            .with_path(dir),
+                    )
+                    .with_source(e.to_string());
                     log::warn!("{err}");
                     result.errors.push(err);
                     continue;
@@ -377,14 +379,16 @@ impl Scanner {
                     Self::read_first_n_lines(&path, large_max_lines)?
                 } else {
                     fs::read_to_string(&path).map_err(|e| {
-                        let err =
-                            ChatVCodeError::io(format!("Failed to read file {}: {e}", path.display()))
-                                .with_context(
-                                    ErrorContext::default()
-                                        .with_operation("scan_and_read")
-                                        .with_path(&path),
-                                )
-                                .with_source(e.to_string());
+                        let err = ChatVCodeError::io(format!(
+                            "Failed to read file {}: {e}",
+                            path.display()
+                        ))
+                        .with_context(
+                            ErrorContext::default()
+                                .with_operation("scan_and_read")
+                                .with_path(&path),
+                        )
+                        .with_source(e.to_string());
                         log::error!("{err}");
                         err
                     })?

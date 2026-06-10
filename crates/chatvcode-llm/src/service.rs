@@ -95,6 +95,10 @@ impl LlamaService {
         // Initialize backend (call once; idempotent in llama.cpp)
         unsafe { crate::ffi::llama_backend_init() };
 
+        // Suppress verbose llama.cpp/ggml log output unless explicitly enabled.
+        // This must be called after backend_init and before model_load.
+        crate::log::setup_ggml_logging(config.verbose_log);
+
         let model_path = &config.model_path;
 
         // --- Step 1: Pre-validate the GGUF file ---
@@ -1045,12 +1049,8 @@ mod tests {
     #[test]
     fn test_llama_embedding_service_from_path_nonexistent() {
         // Loading from a nonexistent path should fail gracefully
-        let result = LlamaEmbeddingService::from_path(
-            Path::new("/nonexistent/model.gguf"),
-            512,
-            4,
-            0,
-        );
+        let result =
+            LlamaEmbeddingService::from_path(Path::new("/nonexistent/model.gguf"), 512, 4, 0);
         assert!(result.is_err(), "Expected error for nonexistent model path");
     }
 }
@@ -1086,11 +1086,7 @@ impl LlamaEmbeddingService {
     /// * `model` — Shared reference to a loaded `LlamaModel`
     /// * `n_ctx` — Context window for embedding (512 is usually sufficient)
     /// * `n_threads` — Number of threads for embedding computation
-    pub fn new(
-        model: Arc<LlamaModel>,
-        n_ctx: u32,
-        n_threads: i32,
-    ) -> LlmResult<Self> {
+    pub fn new(model: Arc<LlamaModel>, n_ctx: u32, n_threads: i32) -> LlmResult<Self> {
         let dim = model.n_embd() as usize;
         let embed_ctx = crate::context::LlamaEmbeddingContext::new(model, n_ctx, n_threads)?;
 
@@ -1098,10 +1094,7 @@ impl LlamaEmbeddingService {
             "LlamaEmbeddingService created: dimension={dim}, n_ctx={n_ctx}, threads={n_threads}"
         );
 
-        Ok(Self {
-            embed_ctx: std::sync::Mutex::new(embed_ctx),
-            dimension: dim,
-        })
+        Ok(Self { embed_ctx: std::sync::Mutex::new(embed_ctx), dimension: dim })
     }
 
     /// Create a new embedding service by loading a model from disk.
@@ -1113,6 +1106,8 @@ impl LlamaEmbeddingService {
         n_threads: i32,
         n_gpu_layers: i32,
     ) -> LlmResult<Self> {
+        // Ensure logging is set up before model load (idempotent).
+        crate::log::setup_ggml_logging(false);
         let model = LlamaModel::load(model_path, n_gpu_layers, true, false)?;
         Self::new(Arc::new(model), n_ctx, n_threads)
     }
@@ -1129,9 +1124,10 @@ impl LlamaEmbeddingService {
     /// hidden state output. The vectors are L2-normalized for
     /// cosine similarity search.
     pub fn embed(&self, texts: &[&str]) -> LlmResult<Vec<Vec<f32>>> {
-        let mut ctx = self.embed_ctx.lock().map_err(|e| {
-            LlmError::Internal(format!("Embedding context lock poisoned: {e}"))
-        })?;
+        let mut ctx = self
+            .embed_ctx
+            .lock()
+            .map_err(|e| LlmError::Internal(format!("Embedding context lock poisoned: {e}")))?;
         ctx.embed_batch(texts)
     }
 }

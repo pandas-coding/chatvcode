@@ -1,4 +1,6 @@
-use chatvcode_core::{ChatVCodeError, ChatVCodeResult, ErrorContext, FileLanguage, ParseResult, SourceFile};
+use chatvcode_core::{
+    ChatVCodeError, ChatVCodeResult, ErrorContext, FileLanguage, ParseResult, SourceFile,
+};
 use tree_sitter::Tree;
 
 use crate::ParserService;
@@ -76,13 +78,16 @@ fn collect_parse_errors(tree: &Tree, source_file: &SourceFile) -> Vec<ChatVCodeE
             );
         } else if node.is_missing() {
             errors.push(
-                ChatVCodeError::parse(format!("missing syntax at row {}", node.start_position().row))
-                    .with_context(
-                        ErrorContext::default()
-                            .with_operation("parse_source")
-                            .with_path(source_file.path.clone())
-                            .with_language(source_file.language),
-                    ),
+                ChatVCodeError::parse(format!(
+                    "missing syntax at row {}",
+                    node.start_position().row
+                ))
+                .with_context(
+                    ErrorContext::default()
+                        .with_operation("parse_source")
+                        .with_path(source_file.path.clone())
+                        .with_language(source_file.language),
+                ),
             );
         }
 

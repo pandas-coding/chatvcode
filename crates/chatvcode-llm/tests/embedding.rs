@@ -36,8 +36,7 @@ fn test_embedding_service_basic() {
 
     eprintln!("Loading model from: {}", model_path.display());
 
-    let model = LlamaModel::load(&model_path, 0, true, false)
-        .expect("Failed to load GGUF model");
+    let model = LlamaModel::load(&model_path, 0, true, false).expect("Failed to load GGUF model");
     let model = Arc::new(model);
 
     let service =
@@ -57,10 +56,7 @@ fn test_embedding_service_basic() {
 
     // Verify L2 normalization (norm should be ~1.0)
     let norm: f32 = vectors[0].iter().map(|x| x * x).sum::<f32>().sqrt();
-    assert!(
-        (norm - 1.0).abs() < 0.01,
-        "L2 norm should be ~1.0, got {norm}"
-    );
+    assert!((norm - 1.0).abs() < 0.01, "L2 norm should be ~1.0, got {norm}");
     eprintln!("First embedding norm: {norm:.6}");
 
     // Embed multiple texts
@@ -75,10 +71,7 @@ fn test_embedding_service_basic() {
     // Both vectors should be L2-normalized
     for (i, vec) in vectors.iter().enumerate() {
         let norm: f32 = vec.iter().map(|x| x * x).sum::<f32>().sqrt();
-        assert!(
-            (norm - 1.0).abs() < 0.01,
-            "Vector {i} L2 norm should be ~1.0, got {norm}"
-        );
+        assert!((norm - 1.0).abs() < 0.01, "Vector {i} L2 norm should be ~1.0, got {norm}");
     }
 
     // Similar texts should have higher cosine similarity than unrelated ones
@@ -97,9 +90,7 @@ fn test_embedding_service_basic() {
         .map(|(a, b)| a * b)
         .sum();
 
-    eprintln!(
-        "Cosine similarity (related): {dot_similar:.4}, (unrelated): {dot_unrelated:.4}"
-    );
+    eprintln!("Cosine similarity (related): {dot_similar:.4}, (unrelated): {dot_unrelated:.4}");
     assert!(
         dot_similar > dot_unrelated,
         "Similar texts should have higher cosine similarity than unrelated texts. \
@@ -147,12 +138,8 @@ fn test_embedding_dimension_matches_model() {
     let model_dim = model.n_embd() as usize;
     eprintln!("Model n_embd: {model_dim}");
 
-    let service = LlamaEmbeddingService::new(Arc::new(model), 512, 4)
-        .expect("Failed to create service");
+    let service =
+        LlamaEmbeddingService::new(Arc::new(model), 512, 4).expect("Failed to create service");
 
-    assert_eq!(
-        service.dimension(),
-        model_dim,
-        "Service dimension should match model n_embd"
-    );
+    assert_eq!(service.dimension(), model_dim, "Service dimension should match model n_embd");
 }

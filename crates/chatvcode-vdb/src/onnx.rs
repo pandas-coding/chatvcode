@@ -260,6 +260,18 @@ impl OnnxEmbeddingService {
             }
         }
 
+        // L2-normalize the embedding so that cosine similarity reduces
+        // to a simple dot product. This is required for consistent similarity
+        // scoring between ONNX and GGUF embedding backends (GGUF normalizes
+        // in LlamaEmbeddingContext::embed) and for effective nearest-neighbor
+        // search in the vector store.
+        let norm: f32 = embedding.iter().map(|x| x * x).sum::<f32>().sqrt();
+        if norm > 0.0 {
+            for val in &mut embedding {
+                *val /= norm;
+            }
+        }
+
         if embedding.len() != self.config.dimension {
             return Err(VdbError::inference(format!(
                 "Output dimension mismatch: expected {}, got {}",

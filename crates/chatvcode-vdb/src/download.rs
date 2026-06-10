@@ -153,8 +153,8 @@ impl ModelDownloader {
 
 impl Default for ModelDownloader {
     fn default() -> Self {
-        let cache_dir = dirs_home()
-            .unwrap_or_else(|| PathBuf::from(".cache").join("chatvcode").join("models"));
+        let cache_dir =
+            dirs_home().unwrap_or_else(|| PathBuf::from(".cache").join("chatvcode").join("models"));
         Self::new(cache_dir)
     }
 }

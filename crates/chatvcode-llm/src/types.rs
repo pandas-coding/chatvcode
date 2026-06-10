@@ -42,14 +42,18 @@ pub struct LlmConfig {
 
     /// Chat template override. `None` means auto-detect from GGUF metadata.
     pub chat_template: Option<String>,
+
+    /// Show verbose llama.cpp/ggml log output (model loading details, etc.).
+    /// When `false` (default), only warnings and errors from the C backend are shown.
+    pub verbose_log: bool,
 }
 
 impl Default for LlmConfig {
     fn default() -> Self {
         Self {
             model_path: PathBuf::new(),
-            n_ctx: 2048,
-            n_batch: 512,
+            n_ctx: 8192,
+            n_batch: 8192,
             n_ubatch: 512,
             n_threads: num_cpus::get() as i32,
             n_threads_batch: num_cpus::get() as i32,
@@ -57,6 +61,7 @@ impl Default for LlmConfig {
             use_mmap: true,
             use_mlock: false,
             chat_template: None,
+            verbose_log: false,
         }
     }
 }
@@ -71,13 +76,22 @@ impl LlmConfig {
     #[must_use]
     pub const fn with_n_ctx(mut self, n_ctx: u32) -> Self {
         self.n_ctx = n_ctx;
+        // Ensure n_batch >= n_ctx so that llama_decode can process the full
+        // context window in a single batch.  n_ubatch stays at a moderate size
+        // (512) to keep memory usage reasonable during micro-batched processing.
+        if self.n_batch < n_ctx {
+            self.n_batch = n_ctx;
+        }
         self
     }
 
     /// Set the batch size.
+    ///
+    /// Note: `n_batch` must be >= `n_ctx` for correct llama.cpp operation.
+    /// If you set a value smaller than `n_ctx`, it will be silently upgraded.
     #[must_use]
     pub const fn with_n_batch(mut self, n_batch: u32) -> Self {
-        self.n_batch = n_batch;
+        self.n_batch = if n_batch < self.n_ctx { self.n_ctx } else { n_batch };
         self
     }
 
@@ -106,6 +120,17 @@ impl LlmConfig {
     /// Override the chat template.
     pub fn with_chat_template(mut self, template: impl Into<String>) -> Self {
         self.chat_template = Some(template.into());
+        self
+    }
+
+    /// Enable or disable verbose llama.cpp/ggml logging.
+    ///
+    /// When enabled, all model loading details (tensor creation, KV metadata,
+    /// backend registration, etc.) are forwarded to Rust's log output.
+    /// When disabled (default), only warnings and errors are shown.
+    #[must_use]
+    pub const fn with_verbose_log(mut self, verbose: bool) -> Self {
+        self.verbose_log = verbose;
         self
     }
 }
@@ -1005,8 +1030,8 @@ mod tests {
     #[test]
     fn test_llm_config_defaults() {
         let config = LlmConfig::default();
-        assert_eq!(config.n_ctx, 2048);
-        assert_eq!(config.n_batch, 512);
+        assert_eq!(config.n_ctx, 8192);
+        assert_eq!(config.n_batch, 8192);
         assert_eq!(config.n_gpu_layers, 0);
         assert!(config.use_mmap);
         assert!(!config.use_mlock);
@@ -1043,6 +1068,28 @@ mod tests {
         let params = GenerationParams::greedy();
         assert_eq!(params.temperature, 0.0);
         assert_eq!(params.top_k, 1);
+    }
+
+    #[test]
+    fn test_n_ctx_upgrades_n_batch() {
+        // Default n_batch=8192, setting n_ctx=4096 should NOT reduce n_batch
+        let config = LlmConfig::new("test.gguf").with_n_ctx(4096);
+        assert_eq!(config.n_ctx, 4096);
+        assert_eq!(config.n_batch, 8192); // n_batch stays at its default
+
+        // Setting n_ctx larger than n_batch should upgrade n_batch
+        let config = LlmConfig::new("test.gguf")
+            .with_n_batch(512)
+            .with_n_ctx(8192);
+        assert_eq!(config.n_ctx, 8192);
+        assert_eq!(config.n_batch, 8192); // auto-upgraded to match n_ctx
+
+        // Setting n_batch smaller than n_ctx should be silently upgraded
+        let config = LlmConfig::new("test.gguf")
+            .with_n_ctx(8192)
+            .with_n_batch(512);
+        assert_eq!(config.n_ctx, 8192);
+        assert_eq!(config.n_batch, 8192); // n_batch upgraded to match n_ctx
     }
 
     #[test]

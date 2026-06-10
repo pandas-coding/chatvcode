@@ -25,8 +25,8 @@ use std::sync::atomic::AtomicBool;
 use std::time::Instant;
 
 use chatvcode_llm::{
-    ChatPromptBuilder, ChatTemplate, GenerationParams, LlmService, StopReason, StreamEvent,
-    TokenUsage,
+    ChatPromptBuilder, ChatTemplate, GenerationParams, LlmError, LlmService, StopReason,
+    StreamEvent, TokenUsage,
 };
 use chatvcode_vdb::{EmbeddingService, InMemoryVectorStore, VectorStore};
 
@@ -75,7 +75,7 @@ impl ChatOptions {
     /// Creates `ChatOptions` with the given project path and defaults.
     ///
     /// Defaults:
-    /// - `top_k` = 8
+    /// - `top_k` = 16
     /// - `min_score` = None (no filter)
     /// - `context_token_budget` = 0 (unlimited)
     /// - `chat_template` = `ChatTemplate::Auto`
@@ -88,7 +88,7 @@ impl ChatOptions {
             vector_store_path: None,
             embedding_config: None,
             metadata_store_path: None,
-            top_k: 8,
+            top_k: 16,
             min_score: None,
             context_token_budget: 0,
             chat_template: ChatTemplate::Auto,
@@ -602,9 +602,24 @@ pub fn chat_with_context(
     let response = llm
         .infer(&prompt, &options.generation_params, Some(&cancel_flag))
         .map_err(|e| {
-            ChatVCodeError::internal(format!("LLM inference failed: {e}"))
-                .with_context(ErrorContext::default().with_operation("chat_with_context"))
-                .with_source(e.to_string())
+            // If context overflow, give a helpful message suggesting the user
+            // increase --n-ctx or decrease --context-token-budget.
+            if matches!(e, LlmError::ContextOverflow { .. }) {
+                if let LlmError::ContextOverflow { n_ctx, n_tokens } = &e {
+                    ChatVCodeError::internal(format!(
+                        "Context overflow: prompt has {n_tokens} tokens but context size is {n_ctx}.\
+\n  Suggestions:\n    - Increase --n-ctx (current: {n_ctx}, try --n-ctx 8192 or higher)\n    - Decrease --context-token-budget to limit RAG context\n    - Reduce --top-k-retrieval to fetch fewer snippets"
+                    ))
+                    .with_context(ErrorContext::default().with_operation("chat_with_context"))
+                    .with_source(e.to_string())
+                } else {
+                    unreachable!("ContextOverflow match failed")
+                }
+            } else {
+                ChatVCodeError::internal(format!("LLM inference failed: {e}"))
+                    .with_context(ErrorContext::default().with_operation("chat_with_context"))
+                    .with_source(e.to_string())
+            }
         })?;
 
     let inference_duration = inference_start.elapsed();
@@ -666,9 +681,22 @@ pub fn chat_with_context_stream(
     let rx = llm
         .infer_stream(&prompt, &options.generation_params, Some(cancel_flag))
         .map_err(|e| {
-            ChatVCodeError::internal(format!("LLM streaming inference failed: {e}"))
-                .with_context(ErrorContext::default().with_operation("chat_with_context_stream"))
-                .with_source(e.to_string())
+            if matches!(e, LlmError::ContextOverflow { .. }) {
+                if let LlmError::ContextOverflow { n_ctx, n_tokens } = &e {
+                    ChatVCodeError::internal(format!(
+                        "Context overflow: prompt has {n_tokens} tokens but context size is {n_ctx}.\
+\n  Suggestions:\n    - Increase --n-ctx (current: {n_ctx}, try --n-ctx 8192 or higher)\n    - Decrease --context-token-budget to limit RAG context\n    - Reduce --top-k-retrieval to fetch fewer snippets"
+                    ))
+                    .with_context(ErrorContext::default().with_operation("chat_with_context_stream"))
+                    .with_source(e.to_string())
+                } else {
+                    unreachable!("ContextOverflow match failed")
+                }
+            } else {
+                ChatVCodeError::internal(format!("LLM streaming inference failed: {e}"))
+                    .with_context(ErrorContext::default().with_operation("chat_with_context_stream"))
+                    .with_source(e.to_string())
+            }
         })?;
 
     Ok(StreamingChatResponse {
@@ -750,6 +778,30 @@ fn retrieve_context(
     }
 
     log::info!("Found {} candidate results", raw_results.len());
+
+    // Diagnostic: warn if retrieval scores are suspiciously uniform,
+    // which indicates the embedding model produces poor discrimination.
+    // This commonly happens with generative (causal) language models used as
+    // embedding models — all code chunks cluster together, yielding near-identical
+    // cosine similarity to any query.
+    if raw_results.len() >= 2 {
+        let scores: Vec<f32> = raw_results.iter().map(|(_, s)| *s).collect();
+        let max_score = scores.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+        let min_score = scores.iter().cloned().fold(f32::INFINITY, f32::min);
+        let score_range = max_score - min_score;
+        let avg_score = scores.iter().sum::<f32>() / scores.len() as f32;
+        log::info!(
+            "Retrieval score stats: min={min_score:.4}, max={max_score:.4}, avg={avg_score:.4}, range={score_range:.4}"
+        );
+        if score_range < 0.05 {
+            log::warn!(
+                "Embedding scores are nearly identical (range={score_range:.4}). \
+                 This indicates the embedding model has poor discrimination. \
+                 Consider using a dedicated embedding model (e.g., bge-m3, nomic-embed-text) \
+                 instead of a generative language model for better retrieval quality."
+            );
+        }
+    }
 
     // Load metadata store
     let metadata_store = load_metadata_store(&metadata_store_path)?;
@@ -863,7 +915,7 @@ mod tests {
     fn test_chat_options_defaults() {
         let opts = ChatOptions::new("/tmp/project");
         assert_eq!(opts.project_path, PathBuf::from("/tmp/project"));
-        assert_eq!(opts.top_k, 8);
+        assert_eq!(opts.top_k, 16);
         assert!(opts.min_score.is_none());
         assert_eq!(opts.context_token_budget, 0);
         assert!(opts.vector_store_path.is_none());

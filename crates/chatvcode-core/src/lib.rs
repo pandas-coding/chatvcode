@@ -45,7 +45,10 @@ where
 /// Indexes all source files under the given path with default options.
 ///
 /// Convenience wrapper around [`index_path_with_options`].
-pub fn index_path(path: impl Into<PathBuf>, parser: &dyn ParseSource) -> ChatVCodeResult<IndexResult> {
+pub fn index_path(
+    path: impl Into<PathBuf>,
+    parser: &dyn ParseSource,
+) -> ChatVCodeResult<IndexResult> {
     index_path_with_options(path, parser, &IndexOptions::default())
 }
 
@@ -234,6 +237,11 @@ pub fn index_path_with_options(
                 metadata_store.len(),
                 metadata_path.display()
             );
+            eprintln!(
+                "  Saved metadata: {} entries -> {}",
+                metadata_store.len(),
+                metadata_path.display()
+            );
         }
     }
 
@@ -248,14 +256,225 @@ pub fn index_path_with_options(
     Ok(index_result)
 }
 
-fn run_embedding_with_service(
+/// Indexes source files with a caller-provided embedding service.
+///
+/// This function performs the same parsing pipeline as [`index_path_with_options`]
+/// but uses a generic [`chatvcode_vdb::EmbeddingService`] instead of always creating
+/// an ONNX service. This allows callers to supply a GGUF-based (or any other)
+/// embedding backend.
+///
+/// # Arguments
+///
+/// * `path` — Project directory or file to index
+/// * `parser` — Source parser (e.g. `chatvcode_parser::parse_source`)
+/// * `options` — Index options (incremental state, thresholds; `embedding` field is
+///   used only for vector store path and batch size)
+/// * `embedding_service` — The embedding service to use for generating vectors
+pub fn index_with_embedding_service(
+    path: impl Into<PathBuf>,
+    parser: &dyn ParseSource,
+    options: &IndexOptions,
+    embedding_service: &dyn chatvcode_vdb::EmbeddingService,
+) -> ChatVCodeResult<IndexResult> {
+    // Run the standard indexing pipeline (scan, parse, split, incremental state)
+    // but without embedding — we'll handle embedding separately with the generic service.
+    let path = path.into();
+    let start = Instant::now();
+
+    if !path.exists() {
+        let err = ChatVCodeError::invalid_input(format!("Path does not exist: {}", path.display()));
+        log::error!("{err}");
+        return Err(err);
+    }
+
+    log::info!("Starting index (with external embedding) for path: {}", path.display());
+
+    let mut scan_options = ScanOptions::new(&path);
+    scan_options.large_file_threshold = Some(options.large_file_threshold);
+    scan_options.large_file_max_lines = Some(options.large_file_max_lines);
+
+    let incremental_state = if let Some(ref state_path) = options.incremental_state_path {
+        match IndexState::load(state_path) {
+            Ok(state) => {
+                log::info!("Loaded incremental state from {}", state_path.display());
+                Some(state)
+            }
+            Err(e) => {
+                log::warn!("Could not load incremental state: {e}");
+                None
+            }
+        }
+    } else {
+        None
+    };
+
+    let source_files = Scanner::scan_and_read(&scan_options);
+
+    let total_scanned = source_files.len();
+    let scan_errors: Vec<_> = source_files.iter().filter(|r| r.is_err()).collect();
+    log::info!(
+        "Scan complete: {} source files found, {} scan errors",
+        total_scanned - scan_errors.len(),
+        scan_errors.len()
+    );
+
+    let files_to_parse: Vec<_> = if let Some(ref state) = incremental_state {
+        source_files
+            .into_iter()
+            .filter(|result| match result {
+                Ok(sf) => match std::fs::metadata(&sf.path) {
+                    Ok(meta) => {
+                        let mtime = meta.modified().unwrap_or(std::time::UNIX_EPOCH);
+                        let size = meta.len();
+                        let changed = state.has_file_changed(&sf.path, mtime, size);
+                        if !changed {
+                            log::debug!("Skipping unchanged file: {}", sf.path.display());
+                        }
+                        changed
+                    }
+                    Err(_) => true,
+                },
+                Err(_) => true,
+            })
+            .collect()
+    } else {
+        source_files
+    };
+
+    let results: Vec<_> = files_to_parse
+        .into_par_iter()
+        .map(|result| match result {
+            Ok(source_file) => {
+                log::debug!("Parsing file: {}", source_file.path.display());
+                match parser.parse(source_file) {
+                    Ok(parse_result) => {
+                        if !parse_result.errors.is_empty() {
+                            log::warn!(
+                                "Parse warnings in {}: {}",
+                                parse_result.file.path.display(),
+                                parse_result.errors.len()
+                            );
+                        }
+                        Ok(parse_result)
+                    }
+                    Err(e) => {
+                        log::error!("Failed to parse file: {e}");
+                        Err(e)
+                    }
+                }
+            }
+            Err(e) => {
+                log::error!("Scan error: {e}");
+                Err(e)
+            }
+        })
+        .collect();
+
+    let mut parse_results = Vec::new();
+    let mut scan_errors = Vec::new();
+
+    for result in results {
+        match result {
+            Ok(parse_result) => parse_results.push(parse_result),
+            Err(e) => scan_errors.push(e),
+        }
+    }
+
+    if options.chunk_split_threshold > 0 {
+        for parse_result in &mut parse_results {
+            let threshold = options.chunk_split_threshold;
+            let mut split_chunks = Vec::new();
+            for chunk in parse_result.chunks.drain(..) {
+                if chunk.source_text.len() > threshold {
+                    let sub_chunks = split_large_chunk(&chunk, threshold);
+                    split_chunks.extend(sub_chunks);
+                } else {
+                    split_chunks.push(chunk);
+                }
+            }
+            parse_result.chunks = split_chunks;
+        }
+    }
+
+    let mut index_result = IndexResult::from_parse_results(parse_results, scan_errors);
+    let elapsed = start.elapsed();
+    index_result.set_elapsed_ms(elapsed.as_millis() as u64);
+
+    if let Some(ref state_path) = options.incremental_state_path {
+        let mut new_state = incremental_state.unwrap_or_else(IndexState::new);
+        for file_result in &index_result.files {
+            let path = &file_result.file.path;
+            if let Ok(meta) = std::fs::metadata(path) {
+                let mtime = meta.modified().unwrap_or(std::time::UNIX_EPOCH);
+                let size = meta.len();
+                new_state.record_file(path, mtime, size, file_result.chunks.len());
+            }
+        }
+        if let Err(e) = new_state.save(state_path) {
+            log::warn!("Failed to save incremental state: {e}");
+        }
+    }
+
+    // Embed with the caller-provided service.
+    // Build a synthetic EmbeddingOptions for VDB path and batch size.
+    let embedding_opts = match &options.embedding {
+        Some(opts) => opts.clone(),
+        None => {
+            // Caller didn't set embedding options — use sensible defaults
+            EmbeddingOptions {
+                config: chatvcode_vdb::EmbeddingConfig::new("", 0, 512),
+                vector_store_path: path.join(".chatvcode").join("vectors.vdb"),
+                batch_size: 32,
+            }
+        }
+    };
+
+    let (embedded, emb_errors, dimension) =
+        run_embedding_with_service(&index_result, &embedding_opts, embedding_service);
+    index_result.stats.embedded_chunks = embedded;
+    index_result.stats.embedding_errors = emb_errors;
+    index_result.stats.embedding_dimension = dimension;
+
+    // Persist chunk metadata store alongside the vector store
+    let metadata_store = build_metadata_store(&index_result);
+    let metadata_path = embedding_opts.vector_store_path.with_extension("atmd");
+    if let Err(e) = metadata_store.save(&metadata_path) {
+        log::warn!("Failed to save metadata store: {e}");
+    } else {
+        log::info!(
+            "Saved metadata store with {} entries to {}",
+            metadata_store.len(),
+            metadata_path.display()
+        );
+        eprintln!(
+            "  Saved metadata: {} entries -> {}",
+            metadata_store.len(),
+            metadata_path.display()
+        );
+    }
+
+    log::info!(
+        "Index complete: {} files parsed, {} chunks, {} errors in {}ms",
+        index_result.stats.parsed_files,
+        index_result.stats.total_chunks,
+        index_result.stats.total_errors,
+        index_result.stats.elapsed_ms
+    );
+
+    Ok(index_result)
+}
+
+/// Runs embedding with a pre-initialized service.
+///
+/// This is a lower-level function that performs the embedding loop and vector store
+/// persistence. It is used by [`index_path_with_options`] (for ONNX) and can be called
+/// directly when you have a custom embedding service (e.g. GGUF-based).
+pub fn run_embedding_with_service(
     index_result: &IndexResult,
     opts: &EmbeddingOptions,
     embedding_service: &dyn chatvcode_vdb::EmbeddingService,
 ) -> (usize, usize, usize) {
     use chatvcode_vdb::{EmbeddingVector, InMemoryVectorStore, VectorStore};
-
-    log::info!("Starting embedding generation for {} chunks", index_result.stats.total_chunks);
 
     let all_chunks: Vec<&CodeChunk> = index_result
         .files
@@ -269,12 +488,27 @@ fn run_embedding_with_service(
     }
 
     let batch_size = if opts.batch_size == 0 { 32 } else { opts.batch_size };
+    let total_chunks = all_chunks.len();
+    let total_batches = (total_chunks + batch_size - 1) / batch_size;
+    log::info!(
+        "Starting embedding generation for {} chunks in {} batches (batch_size={batch_size})",
+        total_chunks,
+        total_batches
+    );
+    eprintln!("  Embedding {} chunks in {} batches...", total_chunks, total_batches);
+
     let mut store = InMemoryVectorStore::new();
     let mut embedded = 0usize;
     let mut emb_errors = 0usize;
 
-    for batch in all_chunks.chunks(batch_size) {
+    for (batch_idx, batch) in all_chunks.chunks(batch_size).enumerate() {
+        let batch_num = batch_idx + 1;
         let texts: Vec<&str> = batch.iter().map(|c| c.source_text.as_str()).collect();
+        eprint!(
+            "\r  Embedding batch {batch_num}/{total_batches} ({}/{} chunks)...",
+            embedded + emb_errors,
+            total_chunks
+        );
         match embedding_service.embed(&texts) {
             Ok(vectors) => {
                 let mut embedding_vectors = Vec::with_capacity(vectors.len());
@@ -296,6 +530,11 @@ fn run_embedding_with_service(
         }
     }
 
+    eprintln!(); // End the progress line
+    eprintln!(
+        "  Embedding complete: {embedded}/{total_chunks} chunks embedded, {emb_errors} errors"
+    );
+
     let dimension = embedding_service.dimension();
 
     if embedded > 0 {
@@ -308,6 +547,11 @@ fn run_embedding_with_service(
             Ok(()) => {
                 log::info!(
                     "Saved vector store with {} vectors to {}",
+                    store.len(),
+                    opts.vector_store_path.display()
+                );
+                eprintln!(
+                    "  Saved vector store: {} vectors -> {}",
                     store.len(),
                     opts.vector_store_path.display()
                 );
@@ -345,16 +589,18 @@ pub fn search(
 ) -> ChatVCodeResult<Vec<SearchResult>> {
     let path = path.into();
 
-    let embedding_service = chatvcode_vdb::OnnxEmbeddingService::new(options.embedding_config.clone())
-        .map_err(|e: chatvcode_vdb::VdbError| {
-            ChatVCodeError::internal(format!("Failed to initialize embedding service: {e}"))
-                .with_context(
-                    ErrorContext::default()
-                        .with_operation("search")
-                        .with_path(&options.embedding_config.model_path),
-                )
-                .with_source(e.to_string())
-        })?;
+    let embedding_service = chatvcode_vdb::OnnxEmbeddingService::new(
+        options.embedding_config.clone(),
+    )
+    .map_err(|e: chatvcode_vdb::VdbError| {
+        ChatVCodeError::internal(format!("Failed to initialize embedding service: {e}"))
+            .with_context(
+                ErrorContext::default()
+                    .with_operation("search")
+                    .with_path(&options.embedding_config.model_path),
+            )
+            .with_source(e.to_string())
+    })?;
 
     search_with_service(query, &path, parser, options, &embedding_service)
 }
@@ -369,7 +615,10 @@ pub fn search_with_service(
     use chatvcode_vdb::VectorStore;
 
     if !path.exists() {
-        return Err(ChatVCodeError::invalid_input(format!("Path does not exist: {}", path.display())));
+        return Err(ChatVCodeError::invalid_input(format!(
+            "Path does not exist: {}",
+            path.display()
+        )));
     }
 
     log::info!("Loading vector store from {}", options.vector_store_path.display());
@@ -395,18 +644,18 @@ pub fn search_with_service(
 
     log::info!("Embedding query: {query:?}");
 
-    let query_vectors = embedding_service
-        .embed(&[query])
-        .map_err(|e: chatvcode_vdb::VdbError| {
-            ChatVCodeError::internal(format!("Failed to embed query: {e}"))
-                .with_context(ErrorContext::default().with_operation("search"))
-                .with_source(e.to_string())
-        })?;
+    let query_vectors =
+        embedding_service
+            .embed(&[query])
+            .map_err(|e: chatvcode_vdb::VdbError| {
+                ChatVCodeError::internal(format!("Failed to embed query: {e}"))
+                    .with_context(ErrorContext::default().with_operation("search"))
+                    .with_source(e.to_string())
+            })?;
 
-    let query_vector = query_vectors
-        .into_iter()
-        .next()
-        .ok_or_else(|| ChatVCodeError::internal("Embedding service returned no result for query"))?;
+    let query_vector = query_vectors.into_iter().next().ok_or_else(|| {
+        ChatVCodeError::internal("Embedding service returned no result for query")
+    })?;
 
     log::info!("Searching for top-{} similar chunks", options.top_k);
 

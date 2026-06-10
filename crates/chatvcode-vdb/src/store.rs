@@ -266,6 +266,13 @@ impl VectorStore for InMemoryVectorStore {
                 .with_source(e.to_string())
         })?;
 
+        // Ensure data is fully persisted to disk (critical on Windows)
+        writer.get_mut().sync_all().map_err(|e| {
+            VdbError::io("Failed to sync vector store file to disk")
+                .with_context(VdbContext::default().with_path(path).with_operation("save"))
+                .with_source(e.to_string())
+        })?;
+
         log::info!("Saved vector store with {} vectors to {}", self.vectors.len(), path.display());
 
         Ok(())
@@ -640,6 +647,13 @@ impl VectorStore for CompactVectorStore {
 
         writer.flush().map_err(|e| {
             VdbError::io("Failed to flush vector store file")
+                .with_context(VdbContext::default().with_path(path).with_operation("save"))
+                .with_source(e.to_string())
+        })?;
+
+        // Ensure data is fully persisted to disk (critical on Windows)
+        writer.get_mut().sync_all().map_err(|e| {
+            VdbError::io("Failed to sync vector store file to disk")
                 .with_context(VdbContext::default().with_path(path).with_operation("save"))
                 .with_source(e.to_string())
         })?;

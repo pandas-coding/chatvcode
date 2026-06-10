@@ -15,6 +15,8 @@
 
 use std::ffi::{c_char, c_float, c_int, c_void};
 
+use bitflags::bitflags;
+
 // ---------------------------------------------------------------------------
 // Opaque types
 // ---------------------------------------------------------------------------
@@ -65,35 +67,303 @@ pub type llama_seq_id = i32;
 pub type llama_memory_t = *mut llama_memory_i;
 
 // ---------------------------------------------------------------------------
-// Enums (integer-based for FFI)
+// Enums — Rust-side as #[repr(C)] enums, mapped 1:1 to llama.h
 // ---------------------------------------------------------------------------
 
+/// Vocabulary type.
+///
+/// Mirrors `enum llama_vocab_type` from `<llama.h>`.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LlamaVocabType {
+    None = 0,
+    Spm = 1,
+    Bpe = 2,
+    Wpm = 3,
+    Ugm = 4,
+    Rwkv = 5,
+    Plamo2 = 6,
+}
+
+impl LlamaVocabType {
+    /// Convert a raw `i32` value from the C API into a [`LlamaVocabType`].
+    ///
+    /// Returns `None` if the value does not correspond to any known variant.
+    #[must_use]
+    pub fn from_i32(v: i32) -> Option<Self> {
+        match v {
+            0 => Some(Self::None),
+            1 => Some(Self::Spm),
+            2 => Some(Self::Bpe),
+            3 => Some(Self::Wpm),
+            4 => Some(Self::Ugm),
+            5 => Some(Self::Rwkv),
+            6 => Some(Self::Plamo2),
+            _ => None,
+        }
+    }
+}
+
+/// RoPE scaling type.
+///
+/// Mirrors `enum llama_rope_scaling_type` from `<llama.h>`.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LlamaRopeScalingType {
+    Unspecified = -1,
+    None = 0,
+    Linear = 1,
+    Yarn = 2,
+    Longrope = 3,
+}
+
+impl LlamaRopeScalingType {
+    /// Convert a raw `i32` value from the C API into a [`LlamaRopeScalingType`].
+    #[must_use]
+    pub fn from_i32(v: i32) -> Option<Self> {
+        match v {
+            -1 => Some(Self::Unspecified),
+            0 => Some(Self::None),
+            1 => Some(Self::Linear),
+            2 => Some(Self::Yarn),
+            3 => Some(Self::Longrope),
+            _ => None,
+        }
+    }
+}
+
+/// Pooling type for embedding contexts.
+///
+/// Mirrors `enum llama_pooling_type` from `<llama.h>`.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LlamaPoolingType {
+    Unspecified = -1,
+    None = 0,
+    Mean = 1,
+    Cls = 2,
+    Last = 3,
+    Rank = 4,
+}
+
+impl LlamaPoolingType {
+    /// Convert a raw `i32` value from the C API into a [`LlamaPoolingType`].
+    #[must_use]
+    pub fn from_i32(v: i32) -> Option<Self> {
+        match v {
+            -1 => Some(Self::Unspecified),
+            0 => Some(Self::None),
+            1 => Some(Self::Mean),
+            2 => Some(Self::Cls),
+            3 => Some(Self::Last),
+            4 => Some(Self::Rank),
+            _ => None,
+        }
+    }
+}
+
+/// Model split mode for multi-GPU.
+///
+/// Mirrors `enum llama_split_mode` from `<llama.h>`.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LlamaSplitMode {
+    None = 0,
+    Layer = 1,
+    Row = 2,
+    Tensor = 3,
+}
+
+impl LlamaSplitMode {
+    /// Convert a raw `i32` value from the C API into a [`LlamaSplitMode`].
+    #[must_use]
+    pub fn from_i32(v: i32) -> Option<Self> {
+        match v {
+            0 => Some(Self::None),
+            1 => Some(Self::Layer),
+            2 => Some(Self::Row),
+            3 => Some(Self::Tensor),
+            _ => None,
+        }
+    }
+}
+
+/// Flash attention configuration.
+///
+/// Mirrors `enum llama_flash_attn_type` from `<llama.h>`.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LlamaFlashAttnType {
+    Auto = -1,
+    Disabled = 0,
+    Enabled = 1,
+}
+
+impl LlamaFlashAttnType {
+    /// Convert a raw `i32` value from the C API into a [`LlamaFlashAttnType`].
+    #[must_use]
+    pub fn from_i32(v: i32) -> Option<Self> {
+        match v {
+            -1 => Some(Self::Auto),
+            0 => Some(Self::Disabled),
+            1 => Some(Self::Enabled),
+            _ => None,
+        }
+    }
+}
+
+// Legacy type aliases for use in struct fields that the C API treats as i32.
+// The enum values will implicitly convert via `as i32` when assigned.
 pub type llama_vocab_type = i32;
-pub const LLAMA_VOCAB_TYPE_NONE: llama_vocab_type = 0;
-pub const LLAMA_VOCAB_TYPE_SPM: llama_vocab_type = 1;
-pub const LLAMA_VOCAB_TYPE_BPE: llama_vocab_type = 2;
-
-pub type llama_ftype = i32;
-
 pub type llama_rope_scaling_type = i32;
-pub const LLAMA_ROPE_SCALING_TYPE_UNSPECIFIED: llama_rope_scaling_type = -1;
-pub const LLAMA_ROPE_SCALING_TYPE_NONE: llama_rope_scaling_type = 0;
-pub const LLAMA_ROPE_SCALING_TYPE_LINEAR: llama_rope_scaling_type = 1;
-pub const LLAMA_ROPE_SCALING_TYPE_YARN: llama_rope_scaling_type = 2;
-
 pub type llama_pooling_type = i32;
-pub const LLAMA_POOLING_TYPE_UNSPECIFIED: llama_pooling_type = -1;
-pub const LLAMA_POOLING_TYPE_NONE: llama_pooling_type = 0;
-
 pub type llama_split_mode = i32;
-pub const LLAMA_SPLIT_MODE_NONE: llama_split_mode = 0;
-pub const LLAMA_SPLIT_MODE_LAYER: llama_split_mode = 1;
-
 pub type llama_flash_attn_type = i32;
+/// Model file type / quantization format.
+///
+/// Mirrors `enum llama_ftype` from `<llama.h>`.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LlamaFtype {
+    AllF32 = 0,
+    MostlyF16 = 1,
+    MostlyQ4_0 = 2,
+    MostlyQ4_1 = 3,
+    MostlyQ8_0 = 7,
+    MostlyQ5_0 = 8,
+    MostlyQ5_1 = 9,
+    MostlyQ2_K = 10,
+    MostlyQ3_K_S = 11,
+    MostlyQ3_K_M = 12,
+    MostlyQ3_K_L = 13,
+    MostlyQ4_K_S = 14,
+    MostlyQ4_K_M = 15,
+    MostlyQ5_K_S = 16,
+    MostlyQ5_K_M = 17,
+    MostlyQ6_K = 18,
+    MostlyIq2Xxs = 19,
+    MostlyIq2Xs = 20,
+    MostlyQ2_K_S = 21,
+    MostlyIq3Xs = 22,
+    MostlyIq3Xxs = 23,
+    MostlyIq1S = 24,
+    MostlyIq4Nl = 25,
+    MostlyIq3S = 26,
+    MostlyIq3M = 27,
+    MostlyIq2S = 28,
+    MostlyIq2M = 29,
+    MostlyIq4Xs = 30,
+    MostlyIq1M = 31,
+    MostlyBf16 = 32,
+    MostlyTq1_0 = 36,
+    MostlyTq2_0 = 37,
+    MostlyMxfp4Moe = 38,
+    MostlyNvfp4 = 39,
+    MostlyQ1_0 = 40,
+    Guessed = 1024,
+}
 
-pub type llama_token_attr = i32;
-pub const LLAMA_TOKEN_ATTR_UNDEFINED: llama_token_attr = 0;
-pub const LLAMA_TOKEN_ATTR_CONTROL: llama_token_attr = 1 << 3;
+impl LlamaFtype {
+    /// Convert a raw `i32` value from the C API into a [`LlamaFtype`].
+    ///
+    /// Returns `None` if the value does not correspond to any known variant.
+    #[must_use]
+    pub fn from_i32(v: i32) -> Option<Self> {
+        match v {
+            0 => Some(Self::AllF32),
+            1 => Some(Self::MostlyF16),
+            2 => Some(Self::MostlyQ4_0),
+            3 => Some(Self::MostlyQ4_1),
+            7 => Some(Self::MostlyQ8_0),
+            8 => Some(Self::MostlyQ5_0),
+            9 => Some(Self::MostlyQ5_1),
+            10 => Some(Self::MostlyQ2_K),
+            11 => Some(Self::MostlyQ3_K_S),
+            12 => Some(Self::MostlyQ3_K_M),
+            13 => Some(Self::MostlyQ3_K_L),
+            14 => Some(Self::MostlyQ4_K_S),
+            15 => Some(Self::MostlyQ4_K_M),
+            16 => Some(Self::MostlyQ5_K_S),
+            17 => Some(Self::MostlyQ5_K_M),
+            18 => Some(Self::MostlyQ6_K),
+            19 => Some(Self::MostlyIq2Xxs),
+            20 => Some(Self::MostlyIq2Xs),
+            21 => Some(Self::MostlyQ2_K_S),
+            22 => Some(Self::MostlyIq3Xs),
+            23 => Some(Self::MostlyIq3Xxs),
+            24 => Some(Self::MostlyIq1S),
+            25 => Some(Self::MostlyIq4Nl),
+            26 => Some(Self::MostlyIq3S),
+            27 => Some(Self::MostlyIq3M),
+            28 => Some(Self::MostlyIq2S),
+            29 => Some(Self::MostlyIq2M),
+            30 => Some(Self::MostlyIq4Xs),
+            31 => Some(Self::MostlyIq1M),
+            32 => Some(Self::MostlyBf16),
+            36 => Some(Self::MostlyTq1_0),
+            37 => Some(Self::MostlyTq2_0),
+            38 => Some(Self::MostlyMxfp4Moe),
+            39 => Some(Self::MostlyNvfp4),
+            40 => Some(Self::MostlyQ1_0),
+            1024 => Some(Self::Guessed),
+            _ => None,
+        }
+    }
+}
+
+/// Legacy C-style type alias for [`LlamaFtype`].
+pub type llama_ftype = LlamaFtype;
+
+// ---------------------------------------------------------------------------
+// Logging
+// ---------------------------------------------------------------------------
+
+/// Log levels used by `ggml_log_callback`.
+///
+/// Mirrors the C `enum ggml_log_level` from `<ggml.h>`.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GgmlLogLevel {
+    None = 0,
+    Debug = 1,
+    Info = 2,
+    Warn = 3,
+    Error = 4,
+    Cont = 5,
+}
+
+pub type ggml_log_callback =
+    Option<unsafe extern "C" fn(level: GgmlLogLevel, text: *const c_char, user_data: *mut c_void)>;
+
+// ---------------------------------------------------------------------------
+// Token attributes (bit flags)
+// ---------------------------------------------------------------------------
+
+bitflags! {
+    /// Token attribute bit flags, combinable with `|` and testable with
+    /// [`contains()`](bitflags::bitflags::contains).
+    ///
+    /// Mirrors `enum llama_token_attr` from `<llama.h>`.
+    #[repr(C)]
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+    pub struct LlamaTokenAttr: i32 {
+        /// No attributes set (the empty set).
+        const UNDEFINED = 0;
+        const UNKNOWN = 1 << 0;
+        const UNUSED = 1 << 1;
+        const NORMAL = 1 << 2;
+        const CONTROL = 1 << 3;
+        const USER_DEFINED = 1 << 4;
+        const BYTE = 1 << 5;
+        const NORMALIZED = 1 << 6;
+        const LSTRIP = 1 << 7;
+        const RSTRIP = 1 << 8;
+        const SINGLE_WORD = 1 << 9;
+    }
+}
+
+/// Legacy C-style type alias for [`LlamaTokenAttr`].
+pub type llama_token_attr = LlamaTokenAttr;
 
 // ---------------------------------------------------------------------------
 // Callback type
@@ -407,6 +677,9 @@ unsafe extern "C" {
     // ---- Misc ----
     pub fn llama_time_us() -> i64;
     pub fn llama_print_system_info() -> *const c_char;
+
+    // ---- Logging ----
+    pub fn ggml_log_set(log_callback: ggml_log_callback, user_data: *mut c_void);
     pub fn llama_supports_mmap() -> bool;
     pub fn llama_supports_mlock() -> bool;
     pub fn llama_supports_gpu_offload() -> bool;

@@ -29,3 +29,9 @@ nul
 # llama.cpp build artifacts
 third_party/llama.cpp/build/
 third_party/llama.cpp/build-*/
+
+## llm models
+**/.models/
+
+## chatvcode runtime folder
+**/.chatvcode/

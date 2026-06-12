@@ -62,6 +62,9 @@ chatvcode chat "What is ownership in Rust?" --retrieval=false --json
 
 # GPU 加速（将模型层卸载到 GPU）
 chatvcode chat "hello" --retrieval=false --n-gpu-layers=-1
+
+# 调试模式（显示 llama.cpp/ggml 详细日志：tensor 创建、backend 注册等）
+chatvcode chat "hello" --retrieval=false --llm-verbose-log
 ```
 
 ### 模式二：RAG 增强对话（需要先建索引）
@@ -78,8 +81,16 @@ chatvcode index ./my-project --model=/path/to/model.gguf
 # 启用 GPU 加速
 chatvcode index ./my-project --model=/path/to/model.gguf --n-gpu-layers=-1
 
+# 调试模式（显示 llama.cpp/ggml 详细日志）
+chatvcode index ./my-project --llm-verbose-log
+
 # 第二步：基于代码库问答
 chatvcode chat "What does the main function do?" --path=./my-project
+
+# --- 或者使用独立的 GGUF 嵌入模型（推荐用于专用嵌入模型如 Qwen3-Embedding）---
+chatvcode index ./my-project --embedding-model=/path/to/embedding.gguf
+chatvcode chat "Explain error handling" --path=./my-project \
+    --embedding-model=/path/to/embedding.gguf
 
 # --- 或者使用 ONNX 嵌入模型 ---
 chatvcode index ./my-project \
@@ -90,55 +101,64 @@ chatvcode chat "Explain error handling" --path=./my-project \
     --embedding-tokenizer=/path/to/tokenizer.json
 ```
 
+> **使用独立嵌入模型**：如果索引时使用了专用嵌入模型（如 Qwen3-Embedding），`chat` 时必须通过 `--embedding-model` 指定同一模型，否则向量维度不匹配会报错。`--model` 用于 LLM 推理，`--embedding-model` 用于嵌入查询，两者可以不同：
+> ```bash
+> chatvcode chat "question" --path=./my-project \
+>     --model=/path/to/llm.gguf \
+>     --embedding-model=/path/to/embedding.gguf
+> ```
+
 ## 所有 `chat` 命令参数
 
-| 参数                     | 默认值      | 说明                                                      |
-| ------------------------ | ----------- | --------------------------------------------------------- |
-| `<QUESTION>`             | —           | 要提问的问题                                              |
-| `-p, --path`             | `.`         | 项目目录路径                                              |
-| `-m, --model`            | 自动发现    | GGUF 模型文件路径                                         |
-| `-t, --temperature`      | `0.7`       | 生成温度                                                  |
-| `--max-tokens`           | `512`       | 最大生成 token 数                                         |
-| `--top-k`                | `40`        | Top-k 采样参数                                            |
-| `--top-p`                | `0.9`       | Top-p 采样参数                                            |
-| `--template`             | `auto`      | Chat 模板：`auto` / `raw` / `chatml` / `llama3` / 自定义  |
-| `--system-prompt`        | 内置默认    | 自定义系统提示                                            |
-| `--stream`               | `true`      | 启用流式输出（用 `--stream=false` 禁用）                  |
-| `--json`                 | 关          | 以 JSON 格式输出结果                                      |
-| `--n-ctx`                | `2048`      | 模型上下文窗口大小                                        |
-| `--n-threads`            | CPU 核心数  | 推理线程数                                                |
-| `--n-gpu-layers`         | `0`         | GPU 卸载层数（`-1` 表示全部层）                           |
-| `--embedding-model`      | —           | ONNX 嵌入模型路径（RAG 模式需要）                         |
-| `--embedding-tokenizer`  | —           | 嵌入模型分词器路径                                        |
-| `--embedding-dimension`  | `0`（自动） | 嵌入向量维度                                              |
-| `--embedding-max-tokens` | `512`       | 嵌入输入最大 token 数                                     |
-| `--top-k-retrieval`      | `8`         | 检索返回的代码片段数                                      |
-| `--min-score`            | —           | 最小相似度阈值（0.0–1.0）                                 |
-| `--context-token-budget` | `0`（不限） | 分配给上下文的 token 预算                                 |
-| `--retrieval`            | `true`      | 启用 RAG 检索（用 `--retrieval=false` 切换为纯 LLM 模式） |
+| 参数                     | 默认值      | 说明                                                        |
+| ------------------------ | ----------- | ----------------------------------------------------------- |
+| `<QUESTION>`             | —           | 要提问的问题                                                |
+| `-p, --path`             | `.`         | 项目目录路径                                                |
+| `-m, --model`            | 自动发现    | GGUF 模型文件路径                                           |
+| `-t, --temperature`      | `0.7`       | 生成温度                                                    |
+| `--max-tokens`           | `512`       | 最大生成 token 数                                           |
+| `--top-k`                | `40`        | Top-k 采样参数                                              |
+| `--top-p`                | `0.9`       | Top-p 采样参数                                              |
+| `--template`             | `auto`      | Chat 模板：`auto` / `raw` / `chatml` / `llama3` / 自定义    |
+| `--system-prompt`        | 内置默认    | 自定义系统提示                                              |
+| `--stream`               | `true`      | 启用流式输出（用 `--stream=false` 禁用）                    |
+| `--json`                 | 关          | 以 JSON 格式输出结果                                        |
+| `--n-ctx`                | `2048`      | 模型上下文窗口大小                                          |
+| `--n-threads`            | CPU 核心数  | 推理线程数                                                  |
+| `--n-gpu-layers`         | `0`         | GPU 卸载层数（`-1` 表示全部层）                             |
+| `--embedding-model`      | —           | 嵌入模型路径（GGUF 或 ONNX，优先于 `--model`）              |
+| `--embedding-tokenizer`  | —           | ONNX 嵌入模型分词器路径（GGUF 模型不需要）                  |
+| `--embedding-dimension`  | `0`（自动） | 嵌入向量维度                                                |
+| `--embedding-max-tokens` | `512`       | 嵌入输入最大 token 数                                       |
+| `--top-k-retrieval`      | `16`        | 检索返回的代码片段数                                        |
+| `--min-score`            | —           | 最小相似度阈值（0.0–1.0）                                   |
+| `--context-token-budget` | `0`（不限） | 分配给上下文的 token 预算                                   |
+| `--retrieval`            | `true`      | 启用 RAG 检索（用 `--retrieval=false` 切换为纯 LLM 模式）   |
+| `--llm-verbose-log`      | `false`     | 启用 llama.cpp/ggml 详细日志（tensor 创建、backend 注册等） |
 
-> **传参格式**：所有参数的统一传参格式为 `--<arg>=<value>`。布尔参数（`--retrieval`、`--stream` 等）还可使用 `--arg`（等价于 `--arg=true`）的简写形式。
+> **传参格式**：所有参数的统一传参格式为 `--<arg>=<value>`。布尔参数（`--retrieval`、`--stream`、`--llm-verbose-log` 等）还可使用 `--arg`（等价于 `--arg=true`）的简写形式。
 
 ## 所有 `index` 命令参数
 
-| 参数                      | 默认值                          | 说明                                                     |
-| ------------------------- | ------------------------------- | -------------------------------------------------------- |
-| `<PATH>`                  | —                               | 项目目录或源文件路径                                     |
-| `--model`                 | 自动发现                        | GGUF 模型文件路径（用于生成嵌入向量）                    |
-| `--n-threads`             | CPU 核心数                      | GGUF 嵌入计算线程数                                      |
-| `--n-gpu-layers`          | `0`                             | GGUF 嵌入 GPU 卸载层数（`-1` 表示全部层）                |
-| `--embedding-model`       | —                               | ONNX 嵌入模型路径（设置后优先使用 ONNX，忽略 `--model`） |
-| `--embedding-tokenizer`   | —                               | ONNX 嵌入模型分词器路径                                  |
-| `--embedding-dimension`   | `0`（自动）                     | 嵌入向量维度                                             |
-| `--embedding-max-tokens`  | `512`                           | 嵌入输入最大 token 数                                    |
-| `--embedding-batch-size`  | `32`                            | 嵌入批处理大小                                           |
-| `--vector-store-path`     | `<path>/.chatvcode/vectors.vdb` | 向量存储文件路径                                         |
-| `--state-file`            | —                               | 增量索引状态文件路径                                     |
-| `--large-file-threshold`  | `1048576`                       | 大文件阈值（字节）                                       |
-| `--large-file-max-lines`  | `500`                           | 大文件最大读取行数                                       |
-| `--chunk-split-threshold` | `3000`                          | 分块字符数阈值（0 禁用）                                 |
+| 参数                      | 默认值                          | 说明                                                        |
+| ------------------------- | ------------------------------- | ----------------------------------------------------------- |
+| `<PATH>`                  | —                               | 项目目录或源文件路径                                        |
+| `--model`                 | 自动发现                        | GGUF 模型文件路径（用于生成嵌入向量）                       |
+| `--n-threads`             | CPU 核心数                      | GGUF 嵌入计算线程数                                         |
+| `--n-gpu-layers`          | `0`                             | GGUF 嵌入 GPU 卸载层数（`-1` 表示全部层）                   |
+| `--embedding-model`       | —                               | 嵌入模型路径（GGUF 或 ONNX，设置后优先使用，忽略 `--model`） |
+| `--embedding-tokenizer`   | —                               | ONNX 嵌入模型分词器路径（GGUF 模型不需要）                  |
+| `--embedding-dimension`   | `0`（自动）                     | 嵌入向量维度                                                |
+| `--embedding-max-tokens`  | `512`                           | 嵌入输入最大 token 数                                       |
+| `--embedding-batch-size`  | `32`                            | 嵌入批处理大小                                              |
+| `--vector-store-path`     | `<path>/.chatvcode/vectors.vdb` | 向量存储文件路径                                            |
+| `--state-file`            | —                               | 增量索引状态文件路径                                        |
+| `--large-file-threshold`  | `1048576`                       | 大文件阈值（字节）                                          |
+| `--large-file-max-lines`  | `500`                           | 大文件最大读取行数                                          |
+| `--chunk-split-threshold` | `3000`                          | 分块字符数阈值（0 禁用）                                    |
+| `--llm-verbose-log`       | `false`                         | 启用 llama.cpp/ggml 详细日志（tensor 创建、backend 注册等） |
 
-> **嵌入模型优先级**：`--embedding-model`（ONNX）> `--model`（GGUF）> 自动发现。两者都设置时优先使用 ONNX。
+> **嵌入模型优先级**：`--embedding-model`（GGUF 或 ONNX）> `--model`（GGUF）> 自动发现。`--embedding-model` 根据文件扩展名自动检测格式（`.gguf` → GGUF，其他 → ONNX）。
 
 ## 输出说明
 
@@ -214,6 +234,23 @@ RAG 模式下，`sources` 字段会包含代码引用来源（文件路径、行
 大多数主流模型在 `auto` 模式下即可正确工作，无需手动指定。
 
 ## 测试与调试
+
+### LLM 详细日志（`--llm-verbose-log`）
+
+当需要排查模型加载问题时，可启用 llama.cpp/ggml 的详细日志输出。默认情况下这些日志（tensor 创建、backend 注册、KV 元数据等）会被静默过滤，开启后会转发到 Rust 的 `log` 输出。
+
+```bash
+# chat 命令启用
+chatvcode chat "hello" --retrieval=false --llm-verbose-log
+
+# index 命令启用
+chatvcode index ./my-project --llm-verbose-log
+
+# 也可使用 --llm-verbose-log=true 的完整写法
+chatvcode chat "hello" --retrieval=false --llm-verbose-log=true
+```
+
+> 详细日志会产生大量输出（数百行 tensor 创建日志），建议仅在调试时使用。更多信息参见 [chatvcode-llm README](../chatvcode-llm/README.md) 中的日志控制说明。
 
 ### Mock LLM 模式
 

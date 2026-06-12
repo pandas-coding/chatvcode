@@ -83,6 +83,15 @@ impl LlamaModel {
         unsafe { ffi::llama_model_n_embd(self.ptr) }
     }
 
+    /// Returns the output embedding dimension of the model.
+    ///
+    /// For dedicated embedding models, this may differ from `n_embd()` when the
+    /// model projects hidden states to a different output dimension.
+    #[must_use]
+    pub fn n_embd_out(&self) -> i32 {
+        unsafe { ffi::llama_model_n_embd_out(self.ptr) }
+    }
+
     /// Returns the raw C pointer (for use by `LlamaContext` and `LlamaEmbeddingContext`).
     pub(crate) const fn as_ptr(&self) -> *mut ffi::llama_model {
         self.ptr
@@ -880,10 +889,10 @@ impl LlamaEmbeddingContext {
     pub fn new(model: Arc<LlamaModel>, n_ctx: u32, n_threads: i32) -> LlmResult<Self> {
         let mut params = unsafe { ffi::llama_context_default_params() };
         params.n_ctx = n_ctx;
-        params.n_batch = n_ctx; // Use full context as batch
-        params.n_ubatch = n_ctx.min(512); // Limit physical micro-batch size
-        params.embeddings = true; // Enable embedding output
-        params.pooling_type = ffi::LlamaPoolingType::Mean as i32; // Use mean pooling for better embeddings
+        params.n_batch = n_ctx;
+        params.n_ubatch = n_ctx.min(512);
+        params.embeddings = true;
+        params.pooling_type = ffi::LlamaPoolingType::Mean as i32;
         params.no_perf = false;
 
         let ctx = unsafe { ffi::llama_init_from_model(model.as_ptr(), params) };
@@ -894,16 +903,16 @@ impl LlamaEmbeddingContext {
             ));
         }
 
-        let actual_n_embd = model.n_embd();
+        let n_embd_out = model.n_embd_out();
+        let n_embd = if n_embd_out > 0 { n_embd_out } else { model.n_embd() };
 
-        // Set thread count
         unsafe { ffi::llama_set_n_threads(ctx, n_threads, n_threads) };
 
         log::info!(
-            "LlamaEmbeddingContext created: n_ctx={n_ctx}, n_embd={actual_n_embd}, threads={n_threads}"
+            "LlamaEmbeddingContext created: n_ctx={n_ctx}, n_embd={n_embd}, n_embd_out={n_embd_out}, threads={n_threads}"
         );
 
-        Ok(Self { ctx, model, n_embd: actual_n_embd as usize, n_ctx })
+        Ok(Self { ctx, model, n_embd: n_embd as usize, n_ctx })
     }
 
     /// Get the embedding dimension.
@@ -992,11 +1001,12 @@ impl LlamaEmbeddingContext {
             )));
         }
 
-        // Get embeddings (sequence 0)
-        let embd_ptr = unsafe { ffi::llama_get_embeddings_ith(self.ctx, 0) };
+        let embd_ptr = unsafe { ffi::llama_get_embeddings_seq(self.ctx, 0) };
         if embd_ptr.is_null() {
             return Err(LlmError::Internal(
-                "Failed to get embeddings from context (null pointer)".into(),
+                "Failed to get sequence embeddings from context (null pointer). \
+                 This may indicate the model does not support mean pooling."
+                    .into(),
             ));
         }
 

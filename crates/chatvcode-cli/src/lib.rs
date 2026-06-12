@@ -6,7 +6,7 @@ use std::time::Instant;
 use chatvcode_core::{
     ChatOptions, ChatResponse, ChatVCodeError, EmbeddingOptions, ErrorSeverity, IndexOptions,
     IndexResult, SearchOptions, SourceReference, chat_with_context, chat_with_context_stream,
-    index_path_with_options, search,
+    index_path_with_options, search, search_with_service,
 };
 use chatvcode_llm::{
     ChatPromptBuilder, ChatTemplate, GenerationParams, LlamaEmbeddingService, LlamaModel,
@@ -51,6 +51,38 @@ impl EmbeddingService for LlamaEmbeddingAdapter {
     }
 }
 
+fn is_gguf_path(path: &str) -> bool {
+    path.to_lowercase().ends_with(".gguf")
+}
+
+fn load_gguf_embedding_service(
+    model_path: &std::path::Path,
+    n_gpu_layers: i32,
+    n_threads: i32,
+    llm_verbose_log: bool,
+) -> Result<Box<dyn EmbeddingService>, ChatVCodeError> {
+    eprintln!(
+        "🔍 Loading GGUF embedding model from {}...",
+        model_path.display()
+    );
+    let embed_svc = LlamaEmbeddingService::from_path(
+        model_path,
+        512,
+        n_threads,
+        n_gpu_layers,
+        llm_verbose_log,
+    )
+    .map_err(|e| {
+        ChatVCodeError::internal(format!("Failed to load GGUF embedding model: {e}"))
+            .with_severity(ErrorSeverity::Unrecoverable)
+    })?;
+    eprintln!(
+        "✓ GGUF embedding model loaded (dim={}).",
+        embed_svc.dimension()
+    );
+    Ok(Box::new(LlamaEmbeddingAdapter::new(embed_svc)) as Box<dyn EmbeddingService>)
+}
+
 /// CLI argument parser for the `chatvcode` tool.
 #[derive(Parser)]
 #[command(name = "chatvcode", version, about = "Code indexing, search, and AI chat tool")]
@@ -78,11 +110,11 @@ pub enum Commands {
         /// Chunk split threshold in characters (default: 3000, 0 to disable).
         #[arg(long, default_value = "3000", help = "Max chars before splitting a chunk")]
         chunk_split_threshold: usize,
-        /// Path to the ONNX embedding model file (enables embedding).
-        #[arg(long, help = "Path to the ONNX embedding model file")]
+        /// Path to the embedding model file (GGUF or ONNX). Takes priority over --model.
+        #[arg(long, help = "Path to the embedding model file (GGUF or ONNX)")]
         embedding_model: Option<String>,
-        /// Path to the tokenizer JSON file (required if --embedding-model is set).
-        #[arg(long, help = "Path to the tokenizer JSON file")]
+        /// Path to the tokenizer JSON file (required for ONNX models).
+        #[arg(long, help = "Path to the tokenizer JSON file for ONNX embeddings")]
         embedding_tokenizer: Option<String>,
         /// Embedding vector dimension (required if --embedding-model is set).
         #[arg(long, default_value = "0", help = "Embedding vector dimension")]
@@ -106,6 +138,9 @@ pub enum Commands {
         /// Number of GPU layers to offload for GGUF embedding (default: 0, -1 = all).
         #[arg(long, default_value = "0", help = "Number of GPU layers for GGUF embedding")]
         n_gpu_layers: i32,
+        /// Enable verbose llama.cpp/ggml log output (tensor creation, backend registration, etc.).
+        #[arg(long, default_value_t = false, num_args = 0..=1, help = "Enable verbose llama.cpp/ggml logging (default: false)")]
+        llm_verbose_log: bool,
     },
     /// Perform semantic search over indexed code chunks.
     Search {
@@ -113,11 +148,11 @@ pub enum Commands {
         query: String,
         #[arg(long, help = "Path to the indexed project directory")]
         path: Option<String>,
-        /// Path to the ONNX embedding model file.
-        #[arg(long, help = "Path to the ONNX embedding model file")]
+        /// Path to the embedding model file (GGUF or ONNX).
+        #[arg(long, help = "Path to the embedding model file (GGUF or ONNX)")]
         embedding_model: Option<String>,
-        /// Path to the tokenizer JSON file (required if --embedding-model is set).
-        #[arg(long, help = "Path to the tokenizer JSON file")]
+        /// Path to the tokenizer JSON file (required for ONNX models).
+        #[arg(long, help = "Path to the tokenizer JSON file for ONNX embeddings")]
         embedding_tokenizer: Option<String>,
         /// Embedding vector dimension (required if --embedding-model is set).
         #[arg(long, default_value = "0", help = "Embedding vector dimension")]
@@ -190,11 +225,11 @@ pub enum Commands {
         /// Number of GPU layers to offload (default: 0, -1 = all).
         #[arg(long, default_value = "0", help = "Number of GPU layers (-1 for all)")]
         n_gpu_layers: i32,
-        /// Path to the embedding model file (needed if no existing index).
-        #[arg(long, help = "Path to the ONNX embedding model file")]
+        /// Path to the embedding model file (GGUF or ONNX). Takes priority over --model for embeddings.
+        #[arg(long, help = "Path to the embedding model file (GGUF or ONNX)")]
         embedding_model: Option<String>,
-        /// Path to the embedding tokenizer file.
-        #[arg(long, help = "Path to the tokenizer JSON file for embeddings")]
+        /// Path to the embedding tokenizer file (required for ONNX models).
+        #[arg(long, help = "Path to the tokenizer JSON file for ONNX embeddings")]
         embedding_tokenizer: Option<String>,
         /// Embedding vector dimension (default: 0 = auto).
         #[arg(long, default_value = "0", help = "Embedding vector dimension")]
@@ -222,6 +257,9 @@ pub enum Commands {
         /// When disabled (--retrieval=false), queries the LLM directly without code context.
         #[arg(long, default_value_t = true, num_args = 0..=1, help = "Enable RAG retrieval (default: true, use --retrieval=false to disable)")]
         retrieval: bool,
+        /// Enable verbose llama.cpp/ggml log output (tensor creation, backend registration, etc.).
+        #[arg(long, default_value_t = false, num_args = 0..=1, help = "Enable verbose llama.cpp/ggml logging (default: false)")]
+        llm_verbose_log: bool,
     },
 }
 
@@ -253,10 +291,16 @@ pub fn execute(cli: Cli) -> Result<(), ChatVCodeError> {
             model,
             n_threads,
             n_gpu_layers,
+            llm_verbose_log,
         } => {
-            // Resolve embedding strategy: ONNX (--embedding-model) > GGUF (--model) > None
-            let embedding = if let Some(ref model_path) = embedding_model {
-                // ONNX embedding model
+            // Resolve embedding strategy:
+            //   --embedding-model (GGUF or ONNX) > --model (GGUF) > auto-discover (GGUF)
+            let use_onnx = embedding_model
+                .as_ref()
+                .is_some_and(|p| !is_gguf_path(p));
+
+            let embedding = if use_onnx {
+                let model_path = embedding_model.as_ref().unwrap();
                 let mut config =
                     EmbeddingConfig::new(model_path, embedding_dimension, embedding_max_tokens);
                 if let Some(ref tokenizer) = embedding_tokenizer {
@@ -271,10 +315,6 @@ pub fn execute(cli: Cli) -> Result<(), ChatVCodeError> {
                     vector_store_path: vstore_path,
                     batch_size: embedding_batch_size,
                 })
-            } else if model.is_some() {
-                // GGUF embedding — resolved in core via a GGUF-aware index path
-                // We pass a sentinel config here; actual GGUF loading happens below.
-                None
             } else {
                 None
             };
@@ -287,21 +327,24 @@ pub fn execute(cli: Cli) -> Result<(), ChatVCodeError> {
                 embedding,
             };
 
-            // If no ONNX embedding model is specified, try GGUF embedding.
-            // index_with_gguf will auto-discover from ~/.chatvcode/models/ if --model is not set.
-            if embedding_model.is_none() {
+            if use_onnx {
+                let result = index_path_with_options(&path, &parse_source, &options)?;
+                print_index_result(&result);
+            } else {
+                // GGUF path: --embedding-model (.gguf) > --model > auto-discover
+                let gguf_model = embedding_model
+                    .as_deref()
+                    .or(model.as_deref());
                 let result = index_with_gguf(
                     &path,
-                    model.as_deref(),
+                    gguf_model,
                     &options,
                     embedding_batch_size,
                     vector_store_path.as_deref(),
                     n_threads,
                     n_gpu_layers,
+                    llm_verbose_log,
                 )?;
-                print_index_result(&result);
-            } else {
-                let result = index_path_with_options(&path, &parse_source, &options)?;
                 print_index_result(&result);
             }
         }
@@ -327,25 +370,58 @@ pub fn execute(cli: Cli) -> Result<(), ChatVCodeError> {
                 }
             };
 
-            let mut config =
-                EmbeddingConfig::new(&model_path, embedding_dimension, embedding_max_tokens);
-            if let Some(tokenizer) = embedding_tokenizer {
-                config = config.with_tokenizer_path(&tokenizer);
-            }
-
             let vstore_path = vector_store_path.map(PathBuf::from).unwrap_or_else(|| {
                 PathBuf::from(&project_path)
                     .join(".chatvcode")
                     .join("vectors.vdb")
             });
 
-            let mut search_opts = SearchOptions::new(config, vstore_path).with_top_k(top_k);
-            if let Some(ms) = min_score {
-                search_opts = search_opts.with_min_score(ms);
-            }
+            if is_gguf_path(&model_path) {
+                let n_threads = num_cpus::get() as i32;
+                let embed_svc = LlamaEmbeddingService::from_path(
+                    &PathBuf::from(&model_path),
+                    512,
+                    n_threads,
+                    0,
+                    false,
+                )
+                .map_err(|e| {
+                    ChatVCodeError::internal(format!(
+                        "Failed to load GGUF embedding model: {e}"
+                    ))
+                    .with_severity(ErrorSeverity::Unrecoverable)
+                })?;
+                let adapter = LlamaEmbeddingAdapter::new(embed_svc);
+                let config = EmbeddingConfig::new(&model_path, 0, embedding_max_tokens);
+                let mut search_opts =
+                    SearchOptions::new(config, vstore_path).with_top_k(top_k);
+                if let Some(ms) = min_score {
+                    search_opts = search_opts.with_min_score(ms);
+                }
+                let results = search_with_service(
+                    &query,
+                    &PathBuf::from(&project_path),
+                    &parse_source,
+                    &search_opts,
+                    &adapter,
+                )?;
+                print_search_results(&query, &results);
+            } else {
+                let mut config =
+                    EmbeddingConfig::new(&model_path, embedding_dimension, embedding_max_tokens);
+                if let Some(tokenizer) = embedding_tokenizer {
+                    config = config.with_tokenizer_path(&tokenizer);
+                }
 
-            let results = search(&query, &project_path, &parse_source, &search_opts)?;
-            print_search_results(&query, &results);
+                let mut search_opts =
+                    SearchOptions::new(config, vstore_path).with_top_k(top_k);
+                if let Some(ms) = min_score {
+                    search_opts = search_opts.with_min_score(ms);
+                }
+
+                let results = search(&query, &project_path, &parse_source, &search_opts)?;
+                print_search_results(&query, &results);
+            }
         }
         Commands::Chat {
             question,
@@ -372,6 +448,7 @@ pub fn execute(cli: Cli) -> Result<(), ChatVCodeError> {
             mock_llm,
             mock_llm_response,
             retrieval,
+            llm_verbose_log,
         } => {
             run_chat(ChatArgs {
                 question,
@@ -398,6 +475,7 @@ pub fn execute(cli: Cli) -> Result<(), ChatVCodeError> {
                 mock_llm,
                 mock_llm_response,
                 retrieval,
+                llm_verbose_log,
             })?;
         }
     }
@@ -430,6 +508,7 @@ struct ChatArgs {
     mock_llm: bool,
     mock_llm_response: Option<String>,
     retrieval: bool,
+    llm_verbose_log: bool,
 }
 
 /// Run the chat command.
@@ -500,7 +579,8 @@ fn run_chat(args: ChatArgs) -> Result<(), ChatVCodeError> {
         let config = chatvcode_llm::LlmConfig::new(&model_path)
             .with_n_ctx(args.n_ctx)
             .with_n_threads(n_threads)
-            .with_n_gpu_layers(args.n_gpu_layers);
+            .with_n_gpu_layers(args.n_gpu_layers)
+            .with_verbose_log(args.llm_verbose_log);
 
         match chatvcode_llm::LlamaService::new(&config) {
             Ok(service) => {
@@ -596,39 +676,48 @@ fn run_chat(args: ChatArgs) -> Result<(), ChatVCodeError> {
     // --- Set up embedding service ---
     // Two sources of embeddings:
     //   1) ONNX model via --embedding-model (explicit, traditional RAG)
-    //   2) GGUF model via --model (auto-derived embeddings, no ONNX needed)
+    //   2) GGUF model via --embedding-model (.gguf) or --model (auto-derived embeddings)
     //
-    // If --embedding-model is provided, use ONNX.
-    // If only --model is provided (no --embedding-model, no --mock-llm), use GGUF embeddings.
-    // If neither, error.
+    // Priority:
+    //   --embedding-model (GGUF or ONNX) > --model (GGUF) > auto-discover (GGUF) > error
     let embedding_service: Box<dyn EmbeddingService> =
         if let Some(model_path) = &args.embedding_model {
-            // ONNX embedding model (traditional path)
-            let embedding_config = {
-                let mut config = EmbeddingConfig::new(
-                    model_path,
-                    args.embedding_dimension,
-                    args.embedding_max_tokens,
-                );
-                if let Some(ref tokenizer) = args.embedding_tokenizer {
-                    config = config.with_tokenizer_path(tokenizer);
-                }
-                config
-            };
+            if is_gguf_path(model_path) {
+                let n_threads = args.n_threads.unwrap_or_else(|| num_cpus::get() as i32);
+                load_gguf_embedding_service(
+                    &PathBuf::from(model_path),
+                    args.n_gpu_layers,
+                    n_threads,
+                    args.llm_verbose_log,
+                )?
+            } else {
+                let embedding_config = {
+                    let mut config = EmbeddingConfig::new(
+                        model_path,
+                        args.embedding_dimension,
+                        args.embedding_max_tokens,
+                    );
+                    if let Some(ref tokenizer) = args.embedding_tokenizer {
+                        config = config.with_tokenizer_path(tokenizer);
+                    }
+                    config
+                };
 
-            // Store dimension info in chat options
-            chat_options = chat_options.embedding_config(embedding_config);
+                chat_options = chat_options.embedding_config(embedding_config);
 
-            eprintln!("🔍 Loading ONNX embedding model from {}...", model_path);
-            let svc = chatvcode_vdb::OnnxEmbeddingService::new(
-                chat_options.embedding_config.as_ref().unwrap().clone(),
-            )
-            .map_err(|e| {
-                ChatVCodeError::internal(format!("Failed to initialize embedding service: {e}"))
+                eprintln!("🔍 Loading ONNX embedding model from {}...", model_path);
+                let svc = chatvcode_vdb::OnnxEmbeddingService::new(
+                    chat_options.embedding_config.as_ref().unwrap().clone(),
+                )
+                .map_err(|e| {
+                    ChatVCodeError::internal(format!(
+                        "Failed to initialize embedding service: {e}"
+                    ))
                     .with_severity(ErrorSeverity::Unrecoverable)
-            })?;
-            eprintln!("✓ ONNX embedding model loaded (dim={}).", svc.dimension());
-            Box::new(svc) as Box<dyn EmbeddingService>
+                })?;
+                eprintln!("✓ ONNX embedding model loaded (dim={}).", svc.dimension());
+                Box::new(svc) as Box<dyn EmbeddingService>
+            }
         } else if !args.mock_llm {
             // GGUF model embeddings (reuses the LLM model)
             let model_path = match &args.model {
@@ -716,6 +805,7 @@ fn index_with_gguf(
     vector_store_path: Option<&str>,
     n_threads: Option<i32>,
     n_gpu_layers: i32,
+    llm_verbose_log: bool,
 ) -> Result<IndexResult, ChatVCodeError> {
     // Resolve model path
     let model_path = match model {
@@ -751,6 +841,7 @@ fn index_with_gguf(
         128,
         n_threads_val,
         n_gpu_layers,
+        llm_verbose_log,
     )
     .map_err(|e| {
         ChatVCodeError::internal(format!("Failed to load GGUF model for embedding: {e}"))
@@ -1529,7 +1620,7 @@ mod tests {
                 assert!(!json);
                 assert_eq!(n_ctx, 8192);
                 assert_eq!(n_gpu_layers, 0);
-                assert_eq!(top_k_retrieval, 8);
+                assert_eq!(top_k_retrieval, 16);
                 assert_eq!(context_token_budget, 0);
                 assert!(!mock_llm);
             }

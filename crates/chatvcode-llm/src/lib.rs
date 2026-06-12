@@ -72,6 +72,7 @@ pub struct BackendInfo {
 /// Must be called once before any other LLM operations.
 /// It is safe to call this multiple times (idempotent).
 pub fn init() {
+    log::setup_ggml_logging(false);
     unsafe { ffi::llama_backend_init() };
 }
 

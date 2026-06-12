@@ -510,6 +510,8 @@ unsafe extern "C" {
 
     pub fn llama_model_n_embd(model: *const llama_model) -> i32;
 
+    pub fn llama_model_n_embd_out(model: *const llama_model) -> i32;
+
     pub fn llama_model_n_layer(model: *const llama_model) -> i32;
 
     pub fn llama_model_n_head(model: *const llama_model) -> i32;
@@ -640,6 +642,7 @@ unsafe extern "C" {
     // ---- Embeddings ----
     pub fn llama_get_embeddings(ctx: *mut llama_context) -> *const c_float;
     pub fn llama_get_embeddings_ith(ctx: *mut llama_context, i: i32) -> *const c_float;
+    pub fn llama_get_embeddings_seq(ctx: *mut llama_context, seq_id: llama_seq_id) -> *const c_float;
     pub fn llama_n_embd(model: *const llama_model) -> i32;
 
     // ---- Memory management ----
@@ -680,6 +683,7 @@ unsafe extern "C" {
 
     // ---- Logging ----
     pub fn ggml_log_set(log_callback: ggml_log_callback, user_data: *mut c_void);
+    pub fn llama_log_set(log_callback: ggml_log_callback, user_data: *mut c_void);
     pub fn llama_supports_mmap() -> bool;
     pub fn llama_supports_mlock() -> bool;
     pub fn llama_supports_gpu_offload() -> bool;

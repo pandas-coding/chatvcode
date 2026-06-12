@@ -92,12 +92,12 @@ impl LlamaService {
     /// 4. Model loading via llama.cpp
     /// 5. Inference context creation
     pub fn new(config: &LlmConfig) -> LlmResult<Self> {
+        // Suppress verbose llama.cpp/ggml log output unless explicitly enabled.
+        // This must be called before backend_init to capture all C-level log output.
+        crate::log::setup_ggml_logging(config.verbose_log);
+
         // Initialize backend (call once; idempotent in llama.cpp)
         unsafe { crate::ffi::llama_backend_init() };
-
-        // Suppress verbose llama.cpp/ggml log output unless explicitly enabled.
-        // This must be called after backend_init and before model_load.
-        crate::log::setup_ggml_logging(config.verbose_log);
 
         let model_path = &config.model_path;
 
@@ -1050,7 +1050,7 @@ mod tests {
     fn test_llama_embedding_service_from_path_nonexistent() {
         // Loading from a nonexistent path should fail gracefully
         let result =
-            LlamaEmbeddingService::from_path(Path::new("/nonexistent/model.gguf"), 512, 4, 0);
+            LlamaEmbeddingService::from_path(Path::new("/nonexistent/model.gguf"), 512, 4, 0, false);
         assert!(result.is_err(), "Expected error for nonexistent model path");
     }
 }
@@ -1087,8 +1087,8 @@ impl LlamaEmbeddingService {
     /// * `n_ctx` — Context window for embedding (512 is usually sufficient)
     /// * `n_threads` — Number of threads for embedding computation
     pub fn new(model: Arc<LlamaModel>, n_ctx: u32, n_threads: i32) -> LlmResult<Self> {
-        let dim = model.n_embd() as usize;
         let embed_ctx = crate::context::LlamaEmbeddingContext::new(model, n_ctx, n_threads)?;
+        let dim = embed_ctx.dimension();
 
         log::info!(
             "LlamaEmbeddingService created: dimension={dim}, n_ctx={n_ctx}, threads={n_threads}"
@@ -1105,9 +1105,10 @@ impl LlamaEmbeddingService {
         n_ctx: u32,
         n_threads: i32,
         n_gpu_layers: i32,
+        verbose: bool,
     ) -> LlmResult<Self> {
         // Ensure logging is set up before model load (idempotent).
-        crate::log::setup_ggml_logging(false);
+        crate::log::setup_ggml_logging(verbose);
         let model = LlamaModel::load(model_path, n_gpu_layers, true, false)?;
         Self::new(Arc::new(model), n_ctx, n_threads)
     }

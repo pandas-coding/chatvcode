@@ -6,7 +6,8 @@
 //! lines of `llama_model_loader`, `print_info`, `load_tensors`, `create_tensor`,
 //! etc.).
 //!
-//! This module installs a custom callback that:
+//! This module installs a custom callback via `llama_log_set()` (which sets
+//! both the ggml-level and llama-level logger states) that:
 //! - In **quiet mode** (default): forwards only `WARN` and `ERROR` messages
 //!   to Rust's `log` crate at the appropriate level. `INFO`, `DEBUG`, and
 //!   `CONT` messages are silently dropped.
@@ -28,7 +29,7 @@ static GGML_VERBOSE: AtomicBool = AtomicBool::new(false);
 
 /// Install the custom log callback and set verbosity mode.
 ///
-/// Must be called **after** `llama_backend_init()` and **before** any model
+/// Must be called **before** `llama_backend_init()` and any model
 /// loading to ensure all C-level log output is captured.
 ///
 /// # Arguments
@@ -39,7 +40,7 @@ pub fn setup_ggml_logging(verbose: bool) {
     GGML_VERBOSE.store(verbose, Ordering::Relaxed);
 
     unsafe {
-        ffi::ggml_log_set(Some(ggml_log_bridge), std::ptr::null_mut());
+        ffi::llama_log_set(Some(ggml_log_bridge), std::ptr::null_mut());
     }
 }
 

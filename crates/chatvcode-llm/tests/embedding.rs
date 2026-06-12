@@ -113,7 +113,7 @@ fn test_embedding_from_path() {
     };
 
     let service =
-        LlamaEmbeddingService::from_path(&model_path, 512, 4, 0).expect("Failed to create service");
+        LlamaEmbeddingService::from_path(&model_path, 512, 4, 0, false).expect("Failed to create service");
 
     let dim = service.dimension();
     assert!(dim > 0, "Dimension should be positive, got {dim}");

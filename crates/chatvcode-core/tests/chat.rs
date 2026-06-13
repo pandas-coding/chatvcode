@@ -662,7 +662,7 @@ fn test_chat_response_is_no_context() {
 fn test_chat_options_default_paths() {
     let opts = ChatOptions::new("/tmp/myproject");
     assert_eq!(opts.project_path, PathBuf::from("/tmp/myproject"));
-    assert_eq!(opts.top_k, 8);
+    assert_eq!(opts.top_k, 16);
     assert!(opts.min_score.is_none());
     assert_eq!(opts.context_token_budget, 0);
     assert!(opts.vector_store_path.is_none());

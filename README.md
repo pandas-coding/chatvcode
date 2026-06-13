@@ -31,7 +31,7 @@ ChatVCode is designed as a modular system to ensure high maintainability and per
 Before building, ensure you have:
 * [Rust toolchain](https://rustup.rs/) (latest stable)
 * [CMake](https://cmake.org/) (for compiling `llama.cpp`)
-* A C++ compiler (GCC/Clang)
+* A C++ compiler (MSVC on Windows, GCC/Clang on Linux/macOS)
 * [GGUF Model](https://huggingface.co/models) (Place your coding model inside `~/.chatvcode/models/`)
 
 ## 📦 Getting Started
@@ -49,6 +49,112 @@ cargo build --release
 # Ask a question about your codebase!
 ./target/release/chatvcode chat "Explain how the authentication middleware is implemented?"
 ```
+
+## 🤖 Model Preparation
+
+ChatVCode requires a **GGUF** format model for local inference. Place your model file in the default directory:
+
+```
+~/.chatvcode/models/
+```
+
+### Recommended Models
+
+| Model | Size | Use Case |
+|-------|------|----------|
+| Qwen2.5-Coder-7B-Instruct | ~4.4 GB (Q4_K_M) | Best for coding tasks |
+| DeepSeek-Coder-6.7B-Instruct | ~3.8 GB (Q4_K_M) | Good coding alternative |
+| CodeLlama-7B-Instruct | ~3.8 GB (Q4_K_M) | Meta's coding model |
+
+### Downloading a Model
+
+```bash
+# Create the models directory
+mkdir -p ~/.chatvcode/models
+
+# Download from Hugging Face (example: Qwen2.5-Coder-7B-Instruct Q4_K_M)
+# Visit https://huggingface.co/Qwen/Qwen2.5-Coder-7B-Instruct-GGUF
+# Download the .gguf file to ~/.chatvcode/models/
+```
+
+### Common Model Errors
+
+| Error | Cause | Solution |
+|-------|-------|----------|
+| `No GGUF model found` | Empty or missing models directory | Download a `.gguf` file to `~/.chatvcode/models/` |
+| `Invalid GGUF magic bytes` | Corrupt or non-GGUF file | Re-download the model file |
+| `Unsupported GGUF version` | Model uses newer GGUF format | Update `chatvcode` to latest version |
+| `Out of memory` | Model too large for available RAM | Use a smaller quantization (e.g., Q4_0 instead of Q8_0) |
+
+## 💬 Chat Command Usage
+
+### Basic Usage
+
+```bash
+# Ask a question about the current directory
+chatvcode chat "What does the main function do?"
+
+# Ask about a specific project
+chatvcode chat "Explain the authentication flow" --path /path/to/project
+
+# Use a specific model
+chatvcode chat "How does routing work?" --model /path/to/model.gguf
+```
+
+### Generation Parameters
+
+```bash
+# Control output length
+chatvcode chat "Explain this code" --max-tokens 1024
+
+# Adjust creativity (lower = more deterministic)
+chatvcode chat "Write a function" --temperature 0.3
+
+# Limit sampling options
+chatvcode chat "Refactor this" --top-k 50
+
+# Override chat template
+chatvcode chat "Question" --template chatml
+```
+
+### Output Modes
+
+```bash
+# Default: streaming output (tokens appear as generated)
+chatvcode chat "Explain the codebase structure"
+
+# Non-streaming: wait for complete response
+chatvcode chat "Quick answer" --no-stream
+
+# JSON output for programmatic use
+chatvcode chat "List all API endpoints" --json
+```
+
+### System Prompt
+
+```bash
+# Custom system prompt
+chatvcode chat "Review this code" --system-prompt "You are a senior Rust developer."
+```
+
+## 🔧 Troubleshooting
+
+### Build Issues
+
+| Problem | Solution |
+|---------|----------|
+| `CMake not found` | Install CMake and ensure it's in PATH |
+| `link.exe failed` (Windows) | Ensure MSVC and CMake are installed; try `cargo clean` then rebuild |
+| `llama.cpp source not found` | Run `git submodule update --init --recursive` |
+
+### Runtime Issues
+
+| Problem | Solution |
+|---------|----------|
+| `Vector store not found` | Run `chatvcode index ./` first to build the index |
+| `Context overflow` | Reduce `--max-tokens` or `--context-token-budget`, or increase `--n-ctx` |
+| `No relevant code found` | Ensure the project has been indexed; check that source files are not in ignored directories |
+| Slow inference | Use a smaller model quantization (Q4_0); enable GPU offload with `--n-gpu-layers -1` |
 
 ## 📂 Directory Structure
 ```text

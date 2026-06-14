@@ -21,6 +21,13 @@ use crate::types::{
 // Service trait
 // ---------------------------------------------------------------------------
 
+/// Session state key for tracking KV cache between multi-turn calls.
+///
+/// An opaque token returned by [`LlmService::infer_cached`] that identifies
+/// the cached state for a specific session. Backends that do not support
+/// KV cache reuse return zero, indicating a fresh state each time.
+pub type KvCacheState = i32;
+
 /// High-level interface for LLM inference.
 ///
 /// Implementations abstract away the underlying backend (llama.cpp,
@@ -50,6 +57,45 @@ pub trait LlmService: Send + Sync {
         params: &GenerationParams,
         cancel_flag: Option<Arc<AtomicBool>>,
     ) -> LlmResult<mpsc::Receiver<StreamEvent>>;
+
+    /// Run synchronous inference reusing the KV cache from a previous turn.
+    ///
+    /// `cache_state` contains opaque state from a previous `infer_cached` call
+    /// (or zero for the first turn). The returned tuple contains the inference
+    /// response and a new cache state to pass to the next call.
+    ///
+    /// The default implementation ignores the cache and delegates to
+    /// [`infer`](LlmService::infer). Backends with KV cache support
+    /// (e.g., [`LlamaService`]) override this for efficient multi-turn
+    /// inference.
+    fn infer_cached(
+        &self,
+        prompt: &str,
+        params: &GenerationParams,
+        _cache_state: KvCacheState,
+        cancel_flag: Option<&AtomicBool>,
+    ) -> LlmResult<(InferenceResponse, KvCacheState)> {
+        // Default: ignore cache, return zero state
+        self.infer(prompt, params, cancel_flag).map(|r| (r, 0))
+    }
+
+    /// Run streaming inference reusing the KV cache from a previous turn.
+    ///
+    /// Like [`infer_cached`](LlmService::infer_cached), but for streaming.
+    /// The returned tuple includes the receiver and a new cache state.
+    ///
+    /// The default implementation ignores the cache and delegates to
+    /// [`infer_stream`](LlmService::infer_stream).
+    fn infer_stream_cached(
+        &self,
+        prompt: &str,
+        params: &GenerationParams,
+        _cache_state: KvCacheState,
+        cancel_flag: Option<Arc<AtomicBool>>,
+    ) -> LlmResult<(mpsc::Receiver<StreamEvent>, KvCacheState)> {
+        // Default: ignore cache, return zero state
+        self.infer_stream(prompt, params, cancel_flag).map(|r| (r, 0))
+    }
 
     /// Return metadata about the currently loaded model.
     fn model_info(&self) -> LlmResult<ModelInfo>;
@@ -434,6 +480,95 @@ impl LlmService for LlamaService {
 
     fn model_info(&self) -> LlmResult<ModelInfo> {
         Ok(self.model.info().clone())
+    }
+
+    fn infer_cached(
+        &self,
+        prompt: &str,
+        params: &GenerationParams,
+        cache_state: KvCacheState,
+        cancel_flag: Option<&AtomicBool>,
+    ) -> LlmResult<(InferenceResponse, KvCacheState)> {
+        let formatted = self.format_prompt(prompt, &ChatTemplate::Auto, &[])?;
+        let tokens = self.context.tokenize(&formatted, true)?;
+
+        if tokens.is_empty() {
+            return Err(LlmError::TokenizeFailed("empty token list".into()));
+        }
+
+        let (resp, new_cache) =
+            self.context
+                .infer_incremental(&tokens, cache_state, params, cancel_flag)?;
+
+        Ok((resp, new_cache))
+    }
+
+    fn infer_stream_cached(
+        &self,
+        prompt: &str,
+        params: &GenerationParams,
+        _cache_state: KvCacheState,
+        cancel_flag: Option<Arc<AtomicBool>>,
+    ) -> LlmResult<(mpsc::Receiver<StreamEvent>, KvCacheState)> {
+        let formatted = self.format_prompt(prompt, &ChatTemplate::Auto, &[])?;
+        let tokens = self.context.tokenize(&formatted, true)?;
+
+        if tokens.is_empty() {
+            return Err(LlmError::TokenizeFailed("empty token list".into()));
+        }
+
+        let (tx, rx) = mpsc::channel();
+        let params = params.clone();
+        let model = self.model.clone();
+        let ctx_params = self.ctx_params.clone();
+
+        // For streaming multi-turn, we create a new context with the KV cache
+        // approach: we pass the cache_state so the new context knows how many
+        // tokens are already cached from previous turns.
+        std::thread::Builder::new()
+            .name("llm-stream-cached".into())
+            .spawn(move || {
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    let ctx = match LlamaContext::new(
+                        model,
+                        ctx_params.n_ctx,
+                        ctx_params.n_batch,
+                        ctx_params.n_threads,
+                        ctx_params.n_threads_batch,
+                    ) {
+                        Ok(ctx) => ctx,
+                        Err(e) => {
+                            let _ = tx.send(StreamEvent::Error(format!(
+                                "Failed to create inference context: {e}"
+                            )));
+                            return;
+                        }
+                    };
+
+                    // For streaming with a new context each time, cache is always 0
+                    match ctx.infer_stream_incremental(&tokens, 0, &params, tx.clone(), cancel_flag) {
+                        Ok(_) => {}
+                        Err(e) => {
+                            let _ = tx.send(StreamEvent::Error(format!("Inference error: {e}")));
+                        }
+                    }
+                }));
+
+                if let Err(panic) = result {
+                    let msg = if let Some(s) = panic.downcast_ref::<String>() {
+                        s.clone()
+                    } else if let Some(s) = panic.downcast_ref::<&str>() {
+                        s.to_string()
+                    } else {
+                        "Inference thread panicked".to_string()
+                    };
+                    let _ = tx.send(StreamEvent::Error(msg));
+                }
+            })
+            .map_err(|e| LlmError::Internal(format!("Failed to spawn inference thread: {e}")))?;
+
+        // For streaming, KV cache state is always 0 since we spawn a new context
+        Ok((rx, 0))
     }
 }
 
@@ -1042,6 +1177,69 @@ mod tests {
         }
 
         assert!(token_count <= 2, "Should not exceed max_tokens");
+    }
+
+    // --- LlamaEmbeddingService unit tests ---
+
+    #[test]
+    fn test_mock_service_infer_cached_default() {
+        let service = MockLlmService::new("Cached inference test");
+        let params = GenerationParams::default();
+
+        // The default infer_cached should delegate to infer and return cache_state=0
+        let (resp, cache_state) = service.infer_cached("test", &params, 0, None).unwrap();
+        assert_eq!(resp.text, "Cached inference test");
+        assert_eq!(cache_state, 0); // Mock doesn't support KV cache
+    }
+
+    #[test]
+    fn test_mock_service_infer_stream_cached_default() {
+        let service = MockLlmService::new("Stream cached test");
+        let params = GenerationParams::default();
+
+        let (rx, cache_state) =
+            service.infer_stream_cached("test", &params, 0, None).unwrap();
+        assert_eq!(cache_state, 0); // Mock doesn't support KV cache
+
+        let mut events = Vec::new();
+        while let Ok(event) = rx.recv_timeout(std::time::Duration::from_secs(5)) {
+            events.push(event);
+        }
+        assert!(!events.is_empty());
+        assert_eq!(events.first(), Some(&StreamEvent::Started));
+        assert_eq!(events.last(), Some(&StreamEvent::Completed));
+    }
+
+    #[test]
+    fn test_chat_session_with_mock_multi_turn() {
+        use crate::types::ChatSession;
+
+        let mock = MockLlmService::new("Multi-turn response");
+        let params = GenerationParams::default();
+
+        let mut session = ChatSession::new(ChatTemplate::ChatML)
+            .system_prompt("You are helpful.");
+
+        // First turn
+        assert_eq!(session.kv_cache_state(), 0);
+        let resp1 = session.chat("What is Rust?", &mock, &params).unwrap();
+        assert!(!resp1.text.is_empty());
+        assert_eq!(session.len(), 2); // user + assistant
+        assert_eq!(session.turn_count(), 1);
+        // Mock returns cache_state=0
+        assert_eq!(session.kv_cache_state(), 0);
+
+        // Second turn (history preserved)
+        let resp2 = session.chat("How do lifetimes work?", &mock, &params).unwrap();
+        assert!(!resp2.text.is_empty());
+        assert_eq!(session.len(), 4);
+        assert_eq!(session.turn_count(), 2);
+
+        // The prompt for the second turn includes history
+        let prompt = session.build_prompt_with("Third question").unwrap();
+        assert!(prompt.contains("What is Rust?"));
+        assert!(prompt.contains("How do lifetimes work?"));
+        assert!(prompt.contains("Third question"));
     }
 
     // --- LlamaEmbeddingService unit tests ---

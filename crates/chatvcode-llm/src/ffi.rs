@@ -648,6 +648,23 @@ unsafe extern "C" {
     // ---- Memory management ----
     pub fn llama_get_memory(ctx: *const llama_context) -> *mut llama_memory_i;
     pub fn llama_memory_clear(mem: *mut llama_memory_i, data: bool);
+    pub fn llama_memory_seq_rm(
+        mem: *mut llama_memory_i,
+        seq_id: llama_seq_id,
+        p0: llama_pos,
+        p1: llama_pos,
+    ) -> bool;
+    pub fn llama_memory_seq_cp(
+        mem: *mut llama_memory_i,
+        seq_id_src: llama_seq_id,
+        seq_id_dst: llama_seq_id,
+        p0: llama_pos,
+        p1: llama_pos,
+    );
+    pub fn llama_memory_seq_keep(
+        mem: *mut llama_memory_i,
+        seq_id: llama_seq_id,
+    );
 
     // ---- Sampler ----
     pub fn llama_sampler_chain_init(params: llama_sampler_chain_params) -> *mut llama_sampler;

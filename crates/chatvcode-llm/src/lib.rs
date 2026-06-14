@@ -52,12 +52,13 @@ pub use gguf::{
     load_model_safe, pre_validate_model, read_gguf_metadata, scan_model, validate_gguf,
 };
 pub use service::{
-    LlamaEmbeddingService, LlamaService, LlmService, MockLlmService, auto_discover_model, dedent,
-    default_model_dir,
+    KvCacheState, LlamaEmbeddingService, LlamaService, LlmService, MockLlmService,
+    auto_discover_model, dedent, default_model_dir,
 };
 pub use types::{
     ChatMessage, ChatPromptBuilder, ChatSession, ChatTemplate, GenerationParams, InferenceResponse,
-    LlmConfig, ModelInfo, StopReason, StreamEvent, TokenUsage,
+    LlmConfig, ModelInfo, StopReason, StreamEvent, TokenUsage, token_estimate,
+    token_estimate_messages,
 };
 
 /// Registered backend information discovered from ggml/llama.cpp.

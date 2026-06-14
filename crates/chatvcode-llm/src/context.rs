@@ -332,6 +332,7 @@ pub struct LlamaContext {
     model: Arc<LlamaModel>,
     sampler: UnsafeCell<*mut ffi::llama_sampler>,
     n_ctx: u32,
+    cached_tokens: std::cell::Cell<i32>,
 }
 
 // SAFETY: llama_context is not thread-safe, but we guard access at a higher level.
@@ -377,12 +378,47 @@ impl LlamaContext {
             "LlamaContext created: n_ctx={actual_n_ctx}, n_batch={actual_n_batch}, threads={n_threads}/{n_threads_batch}"
         );
 
-        Ok(Self { ctx, model, sampler: UnsafeCell::new(sampler), n_ctx: actual_n_ctx })
+        Ok(Self { ctx, model, sampler: UnsafeCell::new(sampler), n_ctx: actual_n_ctx, cached_tokens: std::cell::Cell::new(0) })
     }
 
     /// Returns the context size.
     pub const fn n_ctx(&self) -> u32 {
         self.n_ctx
+    }
+
+    /// Returns the number of tokens currently cached in the KV cache.
+    #[must_use]
+    pub fn cached_token_count(&self) -> i32 {
+        self.cached_tokens.get()
+    }
+
+    /// Clear the KV cache, discarding all cached tokens.
+    pub fn clear_kv_cache(&self) {
+        unsafe {
+            let mem = ffi::llama_get_memory(self.ctx);
+            ffi::llama_memory_clear(mem, true);
+        }
+        self.cached_tokens.set(0);
+    }
+
+    /// Remove tokens from the KV cache starting at position `from`.
+    ///
+    /// This is used for incremental evaluation: tokens before `from`
+    /// are kept in the cache, tokens from `from` onward are removed.
+    pub fn kv_cache_rm_from(&self, from: i32) {
+        if from < 0 {
+            return;
+        }
+        unsafe {
+            let mem = ffi::llama_get_memory(self.ctx);
+            ffi::llama_memory_seq_rm(mem, 0, from, -1);
+        }
+        self.cached_tokens.set(from);
+    }
+
+    /// Set the cached token count (used after successful decode).
+    fn set_cached_token_count(&self, count: i32) {
+        self.cached_tokens.set(count);
     }
 
     /// Returns the model reference.
@@ -512,13 +548,15 @@ impl LlamaContext {
             return Ok(());
         }
 
-        // Use llama_batch_get_one for simplicity with single sequence
         let mut tokens_mut = tokens.to_vec();
         let batch = unsafe { ffi::llama_batch_get_one(tokens_mut.as_mut_ptr(), n_tokens) };
 
         let ret = unsafe { ffi::llama_decode(self.ctx, batch) };
         match ret {
-            0 => Ok(()),
+            0 => {
+                self.set_cached_token_count(self.cached_tokens.get() + n_tokens);
+                Ok(())
+            }
             1 => Err(LlmError::ContextOverflow { n_ctx: self.n_ctx, n_tokens }),
             -1 => Err(LlmError::InferenceFailed("invalid input batch".into())),
             code => Err(LlmError::InferenceFailed(format!("decode returned {code}"))),
@@ -552,10 +590,9 @@ impl LlamaContext {
         let start_time = Instant::now();
         let prompt_n = prompt_tokens.len() as i32;
 
-        // ---- Configure sampler based on params ----
+        self.clear_kv_cache();
         self.rebuild_sampler(params);
 
-        // ---- Evaluate the prompt ----
         self.decode_batch(prompt_tokens)?;
 
         // ---- Generate tokens ----
@@ -647,10 +684,9 @@ impl LlamaContext {
     ) -> LlmResult<TokenUsage> {
         let prompt_n = prompt_tokens.len() as i32;
 
-        // ---- Configure sampler ----
+        self.clear_kv_cache();
         self.rebuild_sampler(params);
 
-        // ---- Evaluate the prompt ----
         self.decode_batch(prompt_tokens)?;
 
         let _ = sender.send(crate::types::StreamEvent::Started);
@@ -702,6 +738,222 @@ impl LlamaContext {
 
         let _ = sender.send(crate::types::StreamEvent::Completed);
         Ok(TokenUsage::new(prompt_n, generated_tokens.len() as i32))
+    }
+
+    /// Run incremental inference using existing KV cache.
+    ///
+    /// Unlike [`infer`](Self::infer), this method does NOT clear the KV cache
+    /// at the start. Instead, it assumes the first `cached_count` tokens are
+    /// already in the KV cache (from a previous turn) and only decodes the
+    /// remaining tokens in `prompt_tokens[cached_count as usize..]`.
+    ///
+    /// After decoding the new tokens, it generates until EOS/max_tokens/stop.
+    ///
+    /// Returns the response and the new total cached token count
+    /// (prompt tokens decoded this turn + generated tokens).
+    #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+    pub fn infer_incremental(
+        &self,
+        prompt_tokens: &[ffi::llama_token],
+        cached_count: i32,
+        params: &GenerationParams,
+        cancel_flag: Option<&AtomicBool>,
+    ) -> LlmResult<(InferenceResponse, i32)> {
+        if cached_count < 0 {
+            return Err(LlmError::InvalidParameter("negative cached_count".into()));
+        }
+
+        let prompt_n = prompt_tokens.len() as i32;
+
+        if cached_count > prompt_n {
+            self.clear_kv_cache();
+            return Err(LlmError::InvalidParameter(format!(
+                "cached_count {cached_count} exceeds prompt token count {prompt_n}"
+            )));
+        }
+
+        // If cache is empty, fall back to full inference
+        if cached_count == 0 || self.cached_token_count() == 0 {
+            let response = self.infer(prompt_tokens, params, cancel_flag)?;
+            let new_cached = prompt_n + response.token_usage.completion_tokens;
+            return Ok((response, new_cached));
+        }
+
+        let start_time = Instant::now();
+        let new_tokens = &prompt_tokens[cached_count as usize..];
+
+        if new_tokens.is_empty() {
+            return Err(LlmError::InvalidParameter("no new tokens to decode (cached_count == prompt length)".into()));
+        }
+
+        self.rebuild_sampler(params);
+
+        self.decode_batch(new_tokens)?;
+
+        let mut generated_tokens: Vec<ffi::llama_token> = Vec::new();
+        let eos = self.eos_token();
+
+        for _i in 0..params.max_tokens {
+            if let Some(flag) = cancel_flag
+                && flag.load(Ordering::Relaxed)
+            {
+                let new_cached = prompt_n + generated_tokens.len() as i32;
+                return Ok((InferenceResponse {
+                    text: self.detokenize_all(&generated_tokens),
+                    stop_reason: StopReason::Cancelled,
+                    token_usage: TokenUsage::new(prompt_n, generated_tokens.len() as i32),
+                    duration: start_time.elapsed(),
+                    time_to_first_token: None,
+                    tokens_per_second: 0.0,
+                }, new_cached));
+            }
+
+            let next_token = self.sample_and_accept(-1);
+
+            if next_token == eos || self.is_eog(next_token) {
+                break;
+            }
+
+            generated_tokens.push(next_token);
+
+            if !params.stop_strings.is_empty() {
+                let text = self.detokenize_all(&generated_tokens);
+                for stop_str in &params.stop_strings {
+                    if text.contains(stop_str.as_str()) {
+                        let new_cached = prompt_n + generated_tokens.len() as i32;
+                        return Ok((InferenceResponse {
+                            text,
+                            stop_reason: StopReason::StopString(stop_str.clone()),
+                            token_usage: TokenUsage::new(prompt_n, generated_tokens.len() as i32),
+                            duration: start_time.elapsed(),
+                            time_to_first_token: None,
+                            tokens_per_second: 0.0,
+                        }, new_cached));
+                    }
+                }
+            }
+
+            self.decode_batch(&[next_token])?;
+        }
+
+        let text = self.detokenize_all(&generated_tokens);
+        let duration = start_time.elapsed();
+        let completion_tokens = generated_tokens.len() as i32;
+        let tps = if duration.as_secs_f64() > 0.0 {
+            f64::from(completion_tokens) / duration.as_secs_f64()
+        } else {
+            0.0
+        };
+
+        let stop_reason = if completion_tokens >= params.max_tokens {
+            StopReason::MaxTokens
+        } else {
+            StopReason::Eos
+        };
+
+        let new_cached = prompt_n + completion_tokens;
+
+        Ok((InferenceResponse {
+            text,
+            stop_reason,
+            token_usage: TokenUsage::new(prompt_n, completion_tokens),
+            duration,
+            time_to_first_token: None,
+            tokens_per_second: tps,
+        }, new_cached))
+    }
+
+    /// Run incremental streaming inference using existing KV cache.
+    ///
+    /// Like [`infer_incremental`](Self::infer_incremental), but sends
+    /// [`StreamEvent`]s through the provided channel.
+    #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+    pub fn infer_stream_incremental(
+        &self,
+        prompt_tokens: &[ffi::llama_token],
+        cached_count: i32,
+        params: &GenerationParams,
+        sender: std::sync::mpsc::Sender<crate::types::StreamEvent>,
+        cancel_flag: Option<Arc<AtomicBool>>,
+    ) -> LlmResult<(TokenUsage, i32)> {
+        if cached_count < 0 {
+            return Err(LlmError::InvalidParameter("negative cached_count".into()));
+        }
+
+        let prompt_n = prompt_tokens.len() as i32;
+
+        if cached_count > prompt_n {
+            self.clear_kv_cache();
+            return Err(LlmError::InvalidParameter(format!(
+                "cached_count {cached_count} exceeds prompt token count {prompt_n}"
+            )));
+        }
+
+        // If cache is empty, fall back to full streaming inference
+        if cached_count == 0 || self.cached_token_count() == 0 {
+            let usage = self.infer_stream(prompt_tokens, params, sender, cancel_flag)?;
+            let new_cached = prompt_n + usage.completion_tokens;
+            return Ok((usage, new_cached));
+        }
+
+        let new_tokens = &prompt_tokens[cached_count as usize..];
+
+        if new_tokens.is_empty() {
+            return Err(LlmError::InvalidParameter("no new tokens to decode (cached_count == prompt length)".into()));
+        }
+
+        self.rebuild_sampler(params);
+
+        self.decode_batch(new_tokens)?;
+
+        let _ = sender.send(crate::types::StreamEvent::Started);
+
+        let mut generated_tokens: Vec<ffi::llama_token> = Vec::new();
+        let eos = self.eos_token();
+
+        for _i in 0..params.max_tokens {
+            if let Some(ref flag) = cancel_flag
+                && flag.load(Ordering::Relaxed)
+            {
+                let _ = sender.send(crate::types::StreamEvent::Cancelled);
+                let new_cached = prompt_n + generated_tokens.len() as i32;
+                return Ok((TokenUsage::new(prompt_n, generated_tokens.len() as i32), new_cached));
+            }
+
+            let next_token = self.sample_and_accept(-1);
+
+            if next_token == eos || self.is_eog(next_token) {
+                break;
+            }
+
+            generated_tokens.push(next_token);
+
+            let piece = self.token_to_piece(next_token);
+            if !piece.is_empty()
+                && sender
+                    .send(crate::types::StreamEvent::Token(piece))
+                    .is_err()
+            {
+                return Ok((TokenUsage::new(prompt_n, generated_tokens.len() as i32), prompt_n + generated_tokens.len() as i32));
+            }
+
+            if !params.stop_strings.is_empty() {
+                let text = self.detokenize_all(&generated_tokens);
+                for stop_str in &params.stop_strings {
+                    if text.contains(stop_str.as_str()) {
+                        let _ = sender.send(crate::types::StreamEvent::Completed);
+                        let new_cached = prompt_n + generated_tokens.len() as i32;
+                        return Ok((TokenUsage::new(prompt_n, generated_tokens.len() as i32), new_cached));
+                    }
+                }
+            }
+
+            self.decode_batch(&[next_token])?;
+        }
+
+        let _ = sender.send(crate::types::StreamEvent::Completed);
+        let new_cached = prompt_n + generated_tokens.len() as i32;
+        Ok((TokenUsage::new(prompt_n, generated_tokens.len() as i32), new_cached))
     }
 
     /// Detokenize a list of tokens into a string.

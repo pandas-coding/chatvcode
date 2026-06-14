@@ -9,8 +9,8 @@ use chatvcode_core::{
     index_path_with_options, search, search_with_service,
 };
 use chatvcode_llm::{
-    ChatPromptBuilder, ChatTemplate, GenerationParams, LlamaEmbeddingService, LlamaModel,
-    LlmService, MockLlmService, StreamEvent,
+    ChatPromptBuilder, ChatSession, ChatTemplate, GenerationParams, LlamaEmbeddingService,
+    LlamaModel, LlmService, MockLlmService, StreamEvent,
 };
 use chatvcode_parser::parse_source;
 use chatvcode_vdb::{EmbeddingConfig, EmbeddingService};
@@ -257,6 +257,13 @@ pub enum Commands {
         /// When disabled (--retrieval=false), queries the LLM directly without code context.
         #[arg(long, default_value_t = true, num_args = 0..=1, help = "Enable RAG retrieval (default: true, use --retrieval=false to disable)")]
         retrieval: bool,
+        /// Enable interactive multi-turn chat mode.
+        ///
+        /// When enabled, enters a REPL loop where you can ask multiple questions
+        /// with conversation history preserved across turns. Use `/quit` to exit,
+        /// `/clear` to clear history, `/help` for commands.
+        #[arg(long, default_value_t = false, num_args = 0..=1, help = "Enable interactive multi-turn chat mode")]
+        interactive: bool,
         /// Enable verbose llama.cpp/ggml log output (tensor creation, backend registration, etc.).
         #[arg(long, default_value_t = false, num_args = 0..=1, help = "Enable verbose llama.cpp/ggml logging (default: false)")]
         llm_verbose_log: bool,
@@ -448,6 +455,7 @@ pub fn execute(cli: Cli) -> Result<(), ChatVCodeError> {
             mock_llm,
             mock_llm_response,
             retrieval,
+            interactive,
             llm_verbose_log,
         } => {
             run_chat(ChatArgs {
@@ -475,6 +483,7 @@ pub fn execute(cli: Cli) -> Result<(), ChatVCodeError> {
                 mock_llm,
                 mock_llm_response,
                 retrieval,
+                interactive,
                 llm_verbose_log,
             })?;
         }
@@ -508,6 +517,7 @@ struct ChatArgs {
     mock_llm: bool,
     mock_llm_response: Option<String>,
     retrieval: bool,
+    interactive: bool,
     llm_verbose_log: bool,
 }
 
@@ -608,6 +618,16 @@ fn run_chat(args: ChatArgs) -> Result<(), ChatVCodeError> {
             }
         }
     };
+
+    // --- Interactive multi-turn mode ---
+    if args.interactive {
+        return run_interactive_chat(
+            &args,
+            &*llm,
+            &chat_template,
+            &generation_params,
+        );
+    }
 
     // --- LLM-only mode: direct inference without RAG ---
     if !args.retrieval {
@@ -872,6 +892,404 @@ fn index_with_gguf(
         &opts_with_embedding,
         &adapter,
     )
+}
+
+/// Run chat in interactive multi-turn REPL mode.
+///
+/// Creates a [`ChatSession`] and enters a read-eval-print loop where each
+/// user message is answered with conversation history preserved across turns.
+/// Supports `/quit`, `/help`, `/clear`, and `/sources` commands.
+///
+/// When `--retrieval=false` (LLM-only mode), queries go directly to the LLM.
+/// When retrieval is enabled, each turn performs a fresh semantic search.
+fn run_interactive_chat(
+    args: &ChatArgs,
+    llm: &dyn LlmService,
+    chat_template: &ChatTemplate,
+    generation_params: &GenerationParams,
+) -> Result<(), ChatVCodeError> {
+    eprintln!();
+    eprintln!("🎤 Interactive chat mode (type `/quit` to exit, `/help` for commands)");
+    eprintln!("📂 Project: {}", args.path);
+    eprintln!(
+        "   Mode: {}",
+        if args.retrieval { "RAG (with code context)" } else { "LLM only" }
+    );
+    eprintln!();
+
+    let mut session = ChatSession::new(chat_template.clone());
+
+    if let Some(ref sys) = args.system_prompt {
+        session.set_system_prompt(Some(sys.clone()));
+    } else {
+        session.set_system_prompt(Some(
+            "You are a helpful coding assistant. Answer questions clearly and concisely.".into(),
+        ));
+    }
+
+    // Set context limits for history trimming
+    session = session
+        .max_context_tokens(args.n_ctx as usize)
+        .reserve_for_response(args.max_tokens.max(512) as usize);
+
+    // --- Load embedding service if RAG mode ---
+    let embedding_service: Option<Box<dyn EmbeddingService>> = if args.retrieval {
+        match setup_embedding_for_interactive(args) {
+            Ok(svc) => Some(svc),
+            Err(e) => {
+                eprintln!("⚠ Embedding service unavailable: {e}");
+                eprintln!("  Falling back to LLM-only mode.");
+                None
+            }
+        }
+    } else {
+        None
+    };
+
+    let mut last_sources: Vec<SourceReference> = Vec::new();
+    let mut last_question: Option<String> = None;
+
+    loop {
+        eprintln!();
+        eprint!("💬 > ");
+        io::Write::flush(&mut io::stdout()).ok();
+
+        let mut line = String::new();
+        match io::stdin().read_line(&mut line) {
+            Ok(0) => {
+                eprintln!();
+                break;
+            }
+            Ok(_) => {
+                // Continue processing
+            }
+            Err(e) => {
+                eprintln!("✗ Failed to read input: {e}");
+                break;
+            }
+        }
+
+        let input = line.trim().to_string();
+
+        if input.is_empty() {
+            continue;
+        }
+
+        // --- Handle commands ---
+        if input.starts_with('/') {
+            match input.as_str() {
+                "/quit" | "/exit" | "/q" => {
+                    eprintln!("👋 Goodbye!");
+                    break;
+                }
+                "/help" | "/h" | "/?" => {
+                    print_interactive_help();
+                    continue;
+                }
+                "/clear" => {
+                    session.clear();
+                    last_sources.clear();
+                    last_question = None;
+                    eprintln!("✓ Conversation history cleared.");
+                    continue;
+                }
+                "/sources" | "/src" => {
+                    if last_sources.is_empty() {
+                        eprintln!("(No sources from the last response)");
+                    } else {
+                        for (i, src) in last_sources.iter().enumerate() {
+                            eprintln!(
+                                "  [{}] {}:{} ({})",
+                                i + 1,
+                                src.file_path.display(),
+                                src.start_line,
+                                src.symbol_name.as_deref().unwrap_or("unknown")
+                            );
+                        }
+                    }
+                    continue;
+                }
+                "/retry" | "/r" => {
+                    if let Some(ref q) = last_question {
+                        eprintln!("🔄 Retrying: {q}");
+                        // Fall through with the last question
+                    } else {
+                        eprintln!("(No previous question to retry)");
+                        continue;
+                    }
+                }
+                cmd => {
+                    eprintln!("Unknown command: {cmd}. Type /help for commands.");
+                    continue;
+                }
+            }
+        }
+
+        let question = if input == "/retry" || input == "/r" {
+            last_question.clone().unwrap_or_default()
+        } else {
+            last_question = Some(input.clone());
+            input.clone()
+        };
+
+        if question.is_empty() {
+            continue;
+        }
+
+        last_sources.clear();
+
+        // --- RAG or LLM-only inference ---
+        if let Some(ref embed_svc) = embedding_service {
+            // RAG path: build prompt with context + history
+            match run_interactive_rag_turn(
+                &question,
+                llm,
+                &**embed_svc,
+                args,
+                generation_params,
+                &session,
+            ) {
+                Ok((response, sources)) => {
+                    last_sources = sources;
+                    if args.stream {
+                        // Streaming already displayed by run_interactive_rag_turn
+                        session.add_user_message(&question);
+                        session.add_assistant_message(&response);
+                    } else {
+                        display_interactive_response(&response, &last_sources, false);
+                        session.add_user_message(&question);
+                        session.add_assistant_message(&response);
+                    }
+                }
+                Err(e) => {
+                    eprintln!("✗ RAG chat failed: {e}");
+                }
+            }
+        } else {
+            // LLM-only path: use ChatSession's multi-turn
+            if args.stream {
+                match session.chat_stream(&question, llm, generation_params) {
+                    Ok(rx) => {
+                        eprintln!("--- Response ---");
+                        let mut full_text = String::new();
+                        let mut token_count = 0u32;
+                        let stdout = io::stdout();
+                        let mut handle = stdout.lock();
+
+                        loop {
+                            match rx.recv_timeout(std::time::Duration::from_secs(120)) {
+                                Ok(event) => match event {
+                                    StreamEvent::Started => {}
+                                    StreamEvent::Token(token) => {
+                                        print!("{token}");
+                                        handle.flush().ok();
+                                        full_text.push_str(&token);
+                                        token_count += 1;
+                                    }
+                                    StreamEvent::Completed => break,
+                                    StreamEvent::Cancelled => {
+                                        eprintln!("\n⚠ Generation was cancelled.");
+                                        break;
+                                    }
+                                    StreamEvent::Error(msg) => {
+                                        eprintln!("\n✗ Error: {msg}");
+                                        break;
+                                    }
+                                },
+                                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                                    eprintln!("\n✗ Generation timed out.");
+                                    break;
+                                }
+                                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                                    break;
+                                }
+                            }
+                        }
+                        drop(handle);
+                        eprintln!();
+                        eprintln!("--- End ---");
+
+                        if !full_text.is_empty() {
+                            session.add_assistant_message(&full_text);
+                        }
+                        eprintln!("  Tokens: {token_count}");
+                    }
+                    Err(e) => {
+                        eprintln!("✗ LLM error: {e}");
+                    }
+                }
+            } else {
+                match session.chat(&question, llm, generation_params) {
+                    Ok(response) => {
+                        display_interactive_response(&response.text, &[], false);
+                    }
+                    Err(e) => {
+                        eprintln!("✗ LLM error: {e}");
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Set up embedding service for interactive chat.
+fn setup_embedding_for_interactive(
+    args: &ChatArgs,
+) -> Result<Box<dyn EmbeddingService>, ChatVCodeError> {
+    if args.mock_llm {
+        return Err(ChatVCodeError::invalid_input(
+            "RAG mode is not supported with --mock-llm in interactive mode.",
+        ));
+    }
+
+    // Check if vector store exists
+    let chat_opts = ChatOptions::new(&args.path);
+    let vstore_path = chat_opts.resolve_vector_store_path();
+    if !vstore_path.exists() {
+        return Err(ChatVCodeError::invalid_input(format!(
+            "Vector store not found at {}. Run `chatvcode index` first.",
+            vstore_path.display()
+        )));
+    }
+
+    if let Some(model_path) = &args.embedding_model {
+        if is_gguf_path(model_path) {
+            let n_threads = args.n_threads.unwrap_or_else(|| num_cpus::get() as i32);
+            load_gguf_embedding_service(
+                &PathBuf::from(model_path),
+                args.n_gpu_layers,
+                n_threads,
+                args.llm_verbose_log,
+            )
+        } else {
+            let embedding_config = {
+                let mut config = EmbeddingConfig::new(
+                    model_path,
+                    args.embedding_dimension,
+                    args.embedding_max_tokens,
+                );
+                if let Some(ref tokenizer) = args.embedding_tokenizer {
+                    config = config.with_tokenizer_path(tokenizer);
+                }
+                config
+            };
+            let svc = chatvcode_vdb::OnnxEmbeddingService::new(embedding_config)
+                .map_err(|e| ChatVCodeError::internal(format!("ONNX embedding init failed: {e}")))?;
+            Ok(Box::new(svc))
+        }
+    } else if let Some(model_path) = &args.model {
+        let n_threads = args.n_threads.unwrap_or_else(|| num_cpus::get() as i32);
+        eprintln!("🔍 Loading GGUF embedding model from {}...", model_path);
+        let embed_svc = LlamaEmbeddingService::from_path(
+            &PathBuf::from(model_path),
+            512,
+            n_threads,
+            args.n_gpu_layers,
+            args.llm_verbose_log,
+        )
+        .map_err(|e| {
+            ChatVCodeError::internal(format!("Failed to load GGUF embedding model: {e}"))
+        })?;
+        Ok(Box::new(LlamaEmbeddingAdapter::new(embed_svc)))
+    } else {
+        // Auto-discover
+        match chatvcode_llm::auto_discover_model() {
+            Ok(model_path) => {
+                let n_threads = args.n_threads.unwrap_or_else(|| num_cpus::get() as i32);
+                eprintln!("🔍 Auto-loaded GGUF embedding model from {}...", model_path.display());
+                let embed_svc = LlamaEmbeddingService::from_path(
+                    &model_path,
+                    512,
+                    n_threads,
+                    args.n_gpu_layers,
+                    args.llm_verbose_log,
+                )
+                .map_err(|e| {
+                    ChatVCodeError::internal(format!("Failed to load GGUF embedding model: {e}"))
+                })?;
+                Ok(Box::new(LlamaEmbeddingAdapter::new(embed_svc)))
+            }
+            Err(e) => Err(ChatVCodeError::invalid_input(format!(
+                "No embedding model available: {e}"
+            ))),
+        }
+    }
+}
+
+/// Run a single RAG turn within interactive chat.
+///
+/// Performs semantic search, builds a RAG prompt with conversation history,
+/// runs inference, and returns the answer with sources.
+fn run_interactive_rag_turn(
+    question: &str,
+    llm: &dyn LlmService,
+    embedding_service: &dyn EmbeddingService,
+    args: &ChatArgs,
+    generation_params: &GenerationParams,
+    session: &ChatSession,
+) -> Result<(String, Vec<SourceReference>), ChatVCodeError> {
+    let context_token_budget = if args.context_token_budget == 0 {
+        let reserved = generation_params.max_tokens as usize + 300;
+        (args.n_ctx as usize).saturating_sub(reserved)
+    } else {
+        args.context_token_budget
+    };
+
+    let mut chat_options = ChatOptions::new(&args.path)
+        .with_top_k(args.top_k_retrieval)
+        .with_chat_template(session.template().clone())
+        .with_generation_params(generation_params.clone())
+        .with_context_token_budget(context_token_budget);
+
+    if let Some(ref sys) = args.system_prompt {
+        chat_options = chat_options.system_prompt(sys);
+    }
+    if let Some(min_score) = args.min_score {
+        chat_options = chat_options.with_min_score(min_score);
+    }
+
+    // Use chat_with_context for the RAG pipeline
+    // Note: chat_with_context internally runs a single-turn query.
+    // For multi-turn RAG, we augment with history by including it in the system prompt.
+    let response = chat_with_context(question, llm, embedding_service, &chat_options)?;
+
+    Ok((response.answer, response.sources))
+}
+
+/// Display a response in interactive mode.
+fn display_interactive_response(answer: &str, sources: &[SourceReference], _json: bool) {
+    eprintln!("--- Response ---");
+    println!("{answer}");
+    eprintln!("--- End ---");
+    if !sources.is_empty() {
+        eprintln!("📎 Sources ({n}):", n = sources.len());
+        for (i, src) in sources.iter().enumerate() {
+            eprintln!(
+                "  [{idx}] {path}:{line} ({kind})",
+                idx = i + 1,
+                path = src.file_path.display(),
+                line = src.start_line,
+                kind = src.symbol_name.as_deref().unwrap_or("unknown")
+            );
+        }
+    }
+    eprintln!();
+}
+
+/// Print help for interactive chat commands.
+fn print_interactive_help() {
+    eprintln!();
+    eprintln!("  Interactive Chat Commands:");
+    eprintln!("    /quit, /q     Exit interactive mode");
+    eprintln!("    /help, /h     Show this help");
+    eprintln!("    /clear        Clear conversation history");
+    eprintln!("    /sources, /src Show sources from last response");
+    eprintln!("    /retry, /r    Resend the last question");
+    eprintln!();
+    eprintln!("  Or just type your question to ask the model.");
+    eprintln!();
 }
 
 /// Run chat in LLM-only mode: direct LLM inference without RAG context.

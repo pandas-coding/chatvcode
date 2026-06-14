@@ -830,40 +830,88 @@ impl ChatPromptBuilder {
 }
 
 // ---------------------------------------------------------------------------
-// Chat session (reserved for future multi-turn support, M4+)
+// Token estimation
+// ---------------------------------------------------------------------------
+
+/// Estimate the number of tokens in a text string.
+///
+/// Uses a heuristic of ~4 characters per token, which is a reasonable
+/// approximation for most Latin-script text. CJK characters and special
+/// tokens may use fewer characters per token.
+///
+/// This is useful for:
+/// - Pre-checking whether a prompt fits within a context window
+/// - Deciding when to trim conversation history
+/// - Budget management for RAG context injection
+#[must_use]
+pub fn token_estimate(text: &str) -> usize {
+    if text.is_empty() {
+        return 0;
+    }
+    let total_chars = text.len();
+    (total_chars + 3) / 4
+}
+
+/// Estimate the number of tokens for a list of chat messages.
+///
+/// Includes a small overhead (~4 tokens per message) for role markers
+/// and template formatting overhead.
+#[must_use]
+pub fn token_estimate_messages(messages: &[ChatMessage]) -> usize {
+    const OVERHEAD_PER_MSG: usize = 4;
+    messages
+        .iter()
+        .map(|m| token_estimate(&m.content) + OVERHEAD_PER_MSG)
+        .sum()
+}
+
+// ---------------------------------------------------------------------------
+// Chat session (multi-turn conversation support)
 // ---------------------------------------------------------------------------
 
 /// A chat session that maintains conversation history across multiple turns.
 ///
-/// **Reserved for future multi-turn support (M4+).** In M3, only
-/// single-turn question-answering is supported via [`ChatPromptBuilder`].
-///
-/// This struct provides the extension point for:
+/// Supports:
 /// - Multi-turn conversation with context accumulation
 /// - KV cache reuse for efficient multi-turn inference
 /// - History trimming for context window management
+/// - System prompt management
+/// - Both synchronous and streaming inference
+///
+/// # Example
+///
+/// ```ignore
+/// use chatvcode_llm::{ChatSession, ChatTemplate, GenerationParams, LlmService};
+///
+/// let mut session = ChatSession::new(ChatTemplate::ChatML)
+///     .system_prompt("You are a helpful coding assistant.")
+///     .max_context_tokens(4096);
+///
+/// // First turn
+/// let response = session.chat("What is Rust?", &llm, &params)?;
+/// println!("{}", response.text);
+///
+/// // Second turn (context from first turn is preserved)
+/// let response = session.chat("How do lifetimes work?", &llm, &params)?;
+/// println!("{}", response.text);
+/// ```
 #[derive(Debug, Clone)]
 pub struct ChatSession {
-    /// Unique session identifier.
     session_id: String,
-    /// System prompt for the entire session.
     system_prompt: Option<String>,
-    /// Conversation history (system + user + assistant messages).
     messages: Vec<ChatMessage>,
-    /// Maximum number of history turns to keep (0 = unlimited).
     max_history_turns: usize,
-    /// Chat template for formatting.
     template: ChatTemplate,
-    /// Estimated token count for the current history.
     estimated_tokens: usize,
-    /// Maximum context window size (0 = unlimited, use model default).
     max_context_tokens: usize,
+    reserve_for_response: usize,
+    /// Opaque KV cache state from the last inference call.
+    /// Passed to `LlmService::infer_cached` for multi-turn efficiency.
+    kv_cache_state: crate::service::KvCacheState,
 }
 
 impl ChatSession {
     /// Create a new chat session with the given template.
-    ///
-    /// **Reserved for future use.** This API is not actively used in M3.
     #[must_use]
     pub fn new(template: ChatTemplate) -> Self {
         Self {
@@ -874,6 +922,8 @@ impl ChatSession {
             template,
             estimated_tokens: 0,
             max_context_tokens: 0,
+            reserve_for_response: 512,
+            kv_cache_state: 0,
         }
     }
 
@@ -903,16 +953,154 @@ impl ChatSession {
         self
     }
 
+    /// Set the number of tokens to reserve for the model's response.
+    ///
+    /// When trimming history, this amount is subtracted from the
+    /// `max_context_tokens` budget to leave room for the generated response.
+    /// Default: 512.
+    #[must_use]
+    pub const fn reserve_for_response(mut self, tokens: usize) -> Self {
+        self.reserve_for_response = tokens;
+        self
+    }
+
+    /// Set the system prompt at runtime.
+    ///
+    /// Replaces any existing system prompt. Pass `None` to remove it.
+    /// Invalidates the KV cache since the context changed.
+    pub fn set_system_prompt(&mut self, prompt: Option<String>) {
+        self.system_prompt = prompt;
+        self.recalculate_tokens();
+        self.kv_cache_state = 0;
+    }
+
+    /// Get the current system prompt.
+    #[must_use]
+    pub fn get_system_prompt(&self) -> Option<&str> {
+        self.system_prompt.as_deref()
+    }
+
+    /// Clear the system prompt.
+    ///
+    /// Invalidates the KV cache since the context changed.
+    pub fn clear_system_prompt(&mut self) {
+        self.system_prompt = None;
+        self.recalculate_tokens();
+        self.kv_cache_state = 0;
+    }
+
+    /// Add a message to the session.
+    pub fn add_message(&mut self, msg: ChatMessage) {
+        self.messages.push(msg);
+        self.recalculate_tokens();
+    }
+
     /// Add a user message to the session.
     pub fn add_user_message(&mut self, content: impl Into<String>) {
         self.messages.push(ChatMessage::user(content));
-        self.estimated_tokens = self.estimate_tokens();
+        self.recalculate_tokens();
     }
 
     /// Add an assistant message to the session.
     pub fn add_assistant_message(&mut self, content: impl Into<String>) {
         self.messages.push(ChatMessage::assistant(content));
-        self.estimated_tokens = self.estimate_tokens();
+        self.recalculate_tokens();
+    }
+
+    /// Clear all conversation history.
+    ///
+    /// The system prompt is preserved. Call `clear_system_prompt()` separately
+    /// to also remove the system prompt.
+    ///
+    /// The KV cache state is invalidated since the context changed.
+    pub fn clear(&mut self) {
+        self.messages.clear();
+        self.estimated_tokens = 0;
+        self.kv_cache_state = 0;
+    }
+
+    /// Reset the session entirely, including the system prompt.
+    ///
+    /// The KV cache state is invalidated.
+    pub fn reset(&mut self) {
+        self.messages.clear();
+        self.system_prompt = None;
+        self.estimated_tokens = 0;
+        self.kv_cache_state = 0;
+    }
+
+    /// Run synchronous inference for the next user message.
+    ///
+    /// This method:
+    /// 1. Adds the user message to history
+    /// 2. Trims history if needed to fit within `max_context_tokens`
+    /// 3. Builds the prompt from the full conversation
+    /// 4. Runs inference via the provided `LlmService`
+    /// 5. Adds the assistant response to history
+    /// 6. Returns the inference response
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if prompt building or inference fails.
+    pub fn chat(
+        &mut self,
+        user_message: &str,
+        llm: &dyn crate::service::LlmService,
+        params: &GenerationParams,
+    ) -> Result<InferenceResponse, crate::error::LlmError> {
+        self.add_user_message(user_message);
+        self.trim_history();
+
+        let prompt = self.build_prompt()?;
+
+        let cancel_flag = std::sync::atomic::AtomicBool::new(false);
+        let (response, new_cache_state) =
+            llm.infer_cached(&prompt, params, self.kv_cache_state, Some(&cancel_flag))?;
+
+        // Update KV cache state. If the backend returned 0 (not supported),
+        // we keep 0 — no caching benefit, but also no harm.
+        self.kv_cache_state = new_cache_state;
+
+        self.add_assistant_message(&response.text);
+
+        Ok(response)
+    }
+
+    /// Run streaming inference for the next user message.
+    ///
+    /// Similar to [`chat`](Self::chat), but returns a receiver for streaming
+    /// token events. The caller must collect the tokens and add the complete
+    /// assistant response to the session via [`add_assistant_message`](Self::add_assistant_message).
+    ///
+    /// # Note
+    ///
+    /// Unlike `chat()`, this method does NOT automatically add the assistant
+    /// response to history. The caller should collect all tokens, concatenate
+    /// them, and call `add_assistant_message()` with the full response text.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if prompt building or inference initiation fails.
+    pub fn chat_stream(
+        &mut self,
+        user_message: &str,
+        llm: &dyn crate::service::LlmService,
+        params: &GenerationParams,
+    ) -> Result<std::sync::mpsc::Receiver<StreamEvent>, crate::error::LlmError> {
+        self.add_user_message(user_message);
+        self.trim_history();
+
+        let prompt = self.build_prompt()?;
+
+        let cancel_flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (rx, new_cache_state) =
+            llm.infer_stream_cached(&prompt, params, self.kv_cache_state, Some(cancel_flag))?;
+
+        // For streaming backends, the cache state comes from a new context
+        // each time, so it's typically 0. Still track it for consistency.
+        self.kv_cache_state = new_cache_state;
+
+        Ok(rx)
     }
 
     /// Build the prompt for the current session state.
@@ -930,48 +1118,108 @@ impl ChatSession {
             messages.push(ChatMessage::system(sys.as_str()));
         }
 
-        // Trim history if needed
-        let messages_to_include = if self.max_history_turns > 0 {
-            let max_msgs = self.max_history_turns * 2;
-            if self.messages.len() > max_msgs {
-                &self.messages[self.messages.len() - max_msgs..]
-            } else {
-                &self.messages[..]
-            }
-        } else {
-            &self.messages[..]
-        };
-
+        let messages_to_include = self.trimmed_messages();
         messages.extend_from_slice(messages_to_include);
 
         self.template.format(&messages, true)
     }
 
+    /// Build the prompt including an explicit user message at the end.
+    ///
+    /// Unlike `build_prompt()`, this does NOT require the user message to
+    /// already be in the session history. Useful for previewing what the
+    /// prompt would look like without modifying the session.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the template cannot format the messages.
+    pub fn build_prompt_with(
+        &self,
+        user_message: &str,
+    ) -> Result<String, crate::error::LlmError> {
+        let mut messages = Vec::new();
+
+        if let Some(sys) = &self.system_prompt {
+            messages.push(ChatMessage::system(sys.as_str()));
+        }
+
+        let messages_to_include = self.trimmed_messages();
+        messages.extend_from_slice(messages_to_include);
+        messages.push(ChatMessage::user(user_message));
+
+        self.template.format(&messages, true)
+    }
+
+    /// Get the messages that would be included in the prompt after trimming.
+    fn trimmed_messages(&self) -> &[ChatMessage] {
+        if self.max_history_turns > 0 {
+            let max_msgs = self.max_history_turns * 2;
+            if self.messages.len() > max_msgs {
+                return &self.messages[self.messages.len() - max_msgs..];
+            }
+        }
+        &self.messages[..]
+    }
+
+    /// Recalculate the estimated token count.
+    fn recalculate_tokens(&mut self) {
+        self.estimated_tokens = self.estimate_tokens();
+    }
+
     /// Estimate the token count for current messages.
     ///
-    /// Uses a rough heuristic of ~4 characters per token.
-    /// This is intentionally conservative.
+    /// Uses [`token_estimate`] per message plus a per-message overhead
+    /// for role markers and template formatting.
     fn estimate_tokens(&self) -> usize {
-        let total_chars: usize = self.messages.iter().map(|m| m.content.len()).sum();
-        (total_chars + 3) / 4 // ceiling division
+        let mut total = token_estimate_messages(&self.messages);
+        if let Some(sys) = &self.system_prompt {
+            total += token_estimate(sys) + 4;
+        }
+        total
     }
 
     /// Trim history to fit within the token budget.
     ///
     /// Removes oldest user+assistant pairs until the estimated
-    /// token count is within budget.
+    /// token count fits within `max_context_tokens - reserve_for_response`.
+    ///
+    /// The system prompt is always preserved (never trimmed).
+    /// If `max_context_tokens` is 0, no trimming is performed.
     pub fn trim_history(&mut self) {
         if self.max_context_tokens == 0 {
             return;
         }
 
-        while self.estimated_tokens > self.max_context_tokens && self.messages.len() > 1 {
-            self.messages.remove(0);
-            self.estimated_tokens = self.estimate_tokens();
+        let budget = self.max_context_tokens.saturating_sub(self.reserve_for_response);
+        let system_tokens = self
+            .system_prompt
+            .as_ref()
+            .map_or(0, |s| token_estimate(s) + 4);
+        let history_budget = budget.saturating_sub(system_tokens);
+
+        if history_budget == 0 {
+            self.messages.clear();
+            self.recalculate_tokens();
+            return;
         }
+
+        while self.messages.len() > 1 {
+            let current = self.estimate_message_tokens(&self.messages);
+            if current <= history_budget {
+                break;
+            }
+            self.messages.remove(0);
+        }
+
+        self.recalculate_tokens();
     }
 
-    /// Returns the number of messages in the session.
+    /// Estimate tokens for a specific slice of messages.
+    fn estimate_message_tokens(&self, messages: &[ChatMessage]) -> usize {
+        token_estimate_messages(messages)
+    }
+
+    /// Returns the number of messages in the session (excluding system prompt).
     #[must_use]
     pub fn len(&self) -> usize {
         self.messages.len()
@@ -1006,6 +1254,91 @@ impl ChatSession {
     pub fn template(&self) -> &ChatTemplate {
         &self.template
     }
+
+    /// Returns the number of complete turns (user+assistant pairs).
+    #[must_use]
+    pub fn turn_count(&self) -> usize {
+        let user_count = self.messages.iter().filter(|m| m.role == "user").count();
+        let assistant_count = self.messages.iter().filter(|m| m.role == "assistant").count();
+        user_count.min(assistant_count)
+    }
+
+    /// Returns the current KV cache state for multi-turn inference.
+    ///
+    /// Zero means no cache is active. Non-zero values are opaque
+    /// counters managed by the LLM backend.
+    #[must_use]
+    pub fn kv_cache_state(&self) -> crate::service::KvCacheState {
+        self.kv_cache_state
+    }
+
+    /// Invalidate the KV cache state.
+    ///
+    /// Call this when the conversation context has been modified outside
+    /// of `chat()` / `chat_stream()` (e.g., after adding or removing
+    /// messages manually). The next inference call will start fresh.
+    pub fn invalidate_kv_cache(&mut self) {
+        self.kv_cache_state = 0;
+    }
+
+    /// Serialize the session state to JSON for persistence.
+    ///
+    /// Returns a JSON string containing the session ID, system prompt,
+    /// and all messages. The chat template is NOT serialized (it should
+    /// be re-specified when restoring).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if serialization fails.
+    pub fn to_json(&self) -> Result<String, crate::error::LlmError> {
+        let state = SessionState {
+            session_id: self.session_id.clone(),
+            system_prompt: self.system_prompt.clone(),
+            messages: self.messages.clone(),
+        };
+        serde_json::to_string_pretty(&state).map_err(|e| {
+            crate::error::LlmError::Internal(format!("Failed to serialize session: {e}"))
+        })
+    }
+
+    /// Restore a session from a JSON string.
+    ///
+    /// The chat template must be provided separately since it is not
+    /// serialized.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if deserialization fails.
+    pub fn from_json(
+        json: &str,
+        template: ChatTemplate,
+    ) -> Result<Self, crate::error::LlmError> {
+        let state: SessionState = serde_json::from_str(json).map_err(|e| {
+            crate::error::LlmError::Internal(format!("Failed to deserialize session: {e}"))
+        })?;
+
+        let mut session = Self {
+            session_id: state.session_id,
+            system_prompt: state.system_prompt,
+            messages: state.messages,
+            max_history_turns: 0,
+            template,
+            estimated_tokens: 0,
+            max_context_tokens: 0,
+            reserve_for_response: 512,
+            kv_cache_state: 0,
+        };
+        session.recalculate_tokens();
+        Ok(session)
+    }
+}
+
+/// Serializable session state for persistence.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct SessionState {
+    session_id: String,
+    system_prompt: Option<String>,
+    messages: Vec<ChatMessage>,
 }
 
 /// Generate a simple unique ID for sessions.
@@ -1178,5 +1511,258 @@ mod tests {
         assert_eq!(StreamEvent::Cancelled, StreamEvent::Cancelled);
         assert_eq!(StreamEvent::Error("a".into()), StreamEvent::Error("a".into()));
         assert_ne!(StreamEvent::Started, StreamEvent::Completed);
+    }
+
+    #[test]
+    fn test_token_estimate_empty() {
+        assert_eq!(token_estimate(""), 0);
+    }
+
+    #[test]
+    fn test_token_estimate_short_text() {
+        assert_eq!(token_estimate("Hi"), 1);
+        assert_eq!(token_estimate("Hello"), 2);
+        assert_eq!(token_estimate("Hello world"), 3);
+    }
+
+    #[test]
+    fn test_token_estimate_longer_text() {
+        let text = "The quick brown fox jumps over the lazy dog";
+        let est = token_estimate(text);
+        assert!(est > 0);
+        assert!(est <= text.len());
+    }
+
+    #[test]
+    fn test_token_estimate_messages_overhead() {
+        let messages = vec![
+            ChatMessage::user("Hello"),
+            ChatMessage::assistant("Hi there!"),
+        ];
+        let est = token_estimate_messages(&messages);
+        let individual_sum = token_estimate("Hello") + token_estimate("Hi there!");
+        assert!(est > individual_sum);
+    }
+
+    #[test]
+    fn test_token_estimate_messages_empty_vec() {
+        assert_eq!(token_estimate_messages(&[]), 0);
+    }
+
+    #[test]
+    fn test_chat_session_new_defaults() {
+        let session = ChatSession::new(ChatTemplate::ChatML);
+        assert!(session.is_empty());
+        assert_eq!(session.len(), 0);
+        assert_eq!(session.estimated_tokens(), 0);
+        assert!(session.get_system_prompt().is_none());
+        assert_eq!(session.turn_count(), 0);
+    }
+
+    #[test]
+    fn test_chat_session_system_prompt_builder() {
+        let session = ChatSession::new(ChatTemplate::ChatML)
+            .system_prompt("You are a helpful assistant.");
+        assert_eq!(session.get_system_prompt(), Some("You are a helpful assistant."));
+    }
+
+    #[test]
+    fn test_chat_session_set_clear_system_prompt() {
+        let mut session = ChatSession::new(ChatTemplate::ChatML);
+        assert!(session.get_system_prompt().is_none());
+        session.set_system_prompt(Some("New prompt".to_string()));
+        assert_eq!(session.get_system_prompt(), Some("New prompt"));
+        session.clear_system_prompt();
+        assert!(session.get_system_prompt().is_none());
+    }
+
+    #[test]
+    fn test_chat_session_add_messages() {
+        let mut session = ChatSession::new(ChatTemplate::ChatML);
+        session.add_message(ChatMessage::user("Hello"));
+        assert_eq!(session.len(), 1);
+        assert!(!session.is_empty());
+        session.add_message(ChatMessage::assistant("Hi!"));
+        assert_eq!(session.len(), 2);
+        assert_eq!(session.turn_count(), 1);
+    }
+
+    #[test]
+    fn test_chat_session_multiple_turns() {
+        let mut session = ChatSession::new(ChatTemplate::ChatML);
+        session.add_user_message("Question 1");
+        session.add_assistant_message("Answer 1");
+        session.add_user_message("Question 2");
+        session.add_assistant_message("Answer 2");
+        assert_eq!(session.len(), 4);
+        assert_eq!(session.turn_count(), 2);
+    }
+
+    #[test]
+    fn test_chat_session_turn_count_incremental() {
+        let mut session = ChatSession::new(ChatTemplate::ChatML);
+        assert_eq!(session.turn_count(), 0);
+        session.add_user_message("Q1");
+        assert_eq!(session.turn_count(), 0);
+        session.add_assistant_message("A1");
+        assert_eq!(session.turn_count(), 1);
+        session.add_user_message("Q2");
+        assert_eq!(session.turn_count(), 1);
+        session.add_assistant_message("A2");
+        assert_eq!(session.turn_count(), 2);
+    }
+
+    #[test]
+    fn test_chat_session_clear_keeps_system() {
+        let mut session = ChatSession::new(ChatTemplate::ChatML)
+            .system_prompt("System prompt");
+        session.add_user_message("Hello");
+        session.add_assistant_message("Hi!");
+        assert_eq!(session.len(), 2);
+        session.clear();
+        assert_eq!(session.len(), 0);
+        assert!(session.is_empty());
+        assert!(session.get_system_prompt().is_some());
+    }
+
+    #[test]
+    fn test_chat_session_reset_clears_all() {
+        let mut session = ChatSession::new(ChatTemplate::ChatML)
+            .system_prompt("System prompt");
+        session.add_user_message("Hello");
+        session.reset();
+        assert_eq!(session.len(), 0);
+        assert!(session.get_system_prompt().is_none());
+    }
+
+    #[test]
+    fn test_chat_session_build_prompt_chatml() {
+        let mut session = ChatSession::new(ChatTemplate::ChatML)
+            .system_prompt("You are helpful.");
+        session.add_user_message("Hello");
+        session.add_assistant_message("Hi!");
+        let prompt = session.build_prompt().unwrap();
+        assert!(prompt.contains("You are helpful."));
+        assert!(prompt.contains("Hello"));
+        assert!(prompt.contains("Hi!"));
+        assert!(prompt.contains("<|im_start|>assistant\n"));
+    }
+
+    #[test]
+    fn test_kv_cache_state_new_session_zero() {
+        let session = ChatSession::new(ChatTemplate::ChatML);
+        assert_eq!(session.kv_cache_state(), 0);
+    }
+
+    #[test]
+    fn test_kv_cache_state_clear_resets() {
+        let mut session = ChatSession::new(ChatTemplate::ChatML);
+        session.add_user_message("Hello");
+        // Simulate a successful turn that set cache state
+        let mut session_test = session.clone();
+        session_test.kv_cache_state = 42;
+
+        session_test.clear();
+        assert_eq!(session_test.kv_cache_state(), 0);
+    }
+
+    #[test]
+    fn test_kv_cache_state_reset_resets() {
+        let mut session = ChatSession::new(ChatTemplate::ChatML);
+        session.kv_cache_state = 42;
+        session.reset();
+        assert_eq!(session.kv_cache_state(), 0);
+    }
+
+    #[test]
+    fn test_system_prompt_change_resets_kv_cache() {
+        let mut session = ChatSession::new(ChatTemplate::ChatML);
+        session.kv_cache_state = 42;
+        session.set_system_prompt(Some("New prompt".into()));
+        assert_eq!(session.kv_cache_state(), 0);
+    }
+
+    #[test]
+    fn test_clear_system_prompt_resets_kv_cache() {
+        let mut session = ChatSession::new(ChatTemplate::ChatML)
+            .system_prompt("Initial");
+        session.kv_cache_state = 42;
+        session.clear_system_prompt();
+        assert_eq!(session.kv_cache_state(), 0);
+    }
+
+    #[test]
+    fn test_invalidate_kv_cache() {
+        let mut session = ChatSession::new(ChatTemplate::ChatML);
+        session.kv_cache_state = 99;
+        session.invalidate_kv_cache();
+        assert_eq!(session.kv_cache_state(), 0);
+    }
+
+    #[test]
+    fn test_chat_session_build_prompt_with() {
+        let mut session = ChatSession::new(ChatTemplate::ChatML)
+            .system_prompt("You are helpful.");
+        session.add_user_message("Hello");
+        session.add_assistant_message("Hi!");
+
+        let prompt = session.build_prompt_with("What's next?").unwrap();
+        assert!(prompt.contains("You are helpful."));
+        assert!(prompt.contains("Hello"));
+        assert!(prompt.contains("What's next?"));
+        assert!(prompt.ends_with("<|im_start|>assistant\n"));
+
+        // build_prompt_with should NOT modify the session
+        assert_eq!(session.len(), 2);
+    }
+
+    #[test]
+    fn test_chat_session_max_history_turns() {
+        let session = ChatSession::new(ChatTemplate::ChatML).max_history_turns(2);
+
+        let mut s = session.clone();
+        // Add 3 turns (6 messages)
+        for i in 0..3 {
+            s.add_user_message(format!("Q{i}"));
+            s.add_assistant_message(format!("A{i}"));
+        }
+        assert_eq!(s.len(), 6);
+
+        // The prompt should only include the last 2 turns (4 messages)
+        let prompt = s.build_prompt_with("Q3").unwrap();
+        assert!(!prompt.contains("Q0"));
+        assert!(prompt.contains("Q1"));
+        assert!(prompt.contains("Q2"));
+    }
+
+    #[test]
+    fn test_chat_session_token_estimation_after_adding() {
+        let mut session = ChatSession::new(ChatTemplate::ChatML);
+        assert_eq!(session.estimated_tokens(), 0);
+
+        session.add_user_message("Hello world");
+        assert!(session.estimated_tokens() > 0);
+
+        session.add_assistant_message("Hi there!");
+        assert!(session.estimated_tokens() > token_estimate("Hello world") + token_estimate("Hi there!"));
+    }
+
+    #[test]
+    fn test_chat_session_to_json_from_json_roundtrip() {
+        let mut session = ChatSession::new(ChatTemplate::ChatML)
+            .system_prompt("System");
+        session.add_user_message("Hello");
+        session.add_assistant_message("Hi!");
+        session.kv_cache_state = 42;
+
+        let json = session.to_json().unwrap();
+
+        let restored = ChatSession::from_json(&json, ChatTemplate::ChatML).unwrap();
+        assert_eq!(restored.session_id(), session.session_id());
+        assert_eq!(restored.get_system_prompt(), session.get_system_prompt());
+        assert_eq!(restored.len(), session.len());
+        assert_eq!(restored.messages(), session.messages());
+        // KV cache state is NOT persisted (it's runtime state)
+        assert_eq!(restored.kv_cache_state(), 0);
     }
 }

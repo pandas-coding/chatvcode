@@ -206,7 +206,12 @@ impl LlamaService {
                     tmpl
                 } else {
                     let inferred = gguf::infer_chat_template(&gguf_meta);
-                    inferred.unwrap_or_else(|| "chatml".to_string())
+                    inferred.unwrap_or_else(|| {
+                        log::info!(
+                            "Chat template auto-detection failed; falling back to ChatML"
+                        );
+                        "chatml".to_string()
+                    })
                 }
             }
         };

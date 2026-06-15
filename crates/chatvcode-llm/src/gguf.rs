@@ -416,6 +416,14 @@ pub fn read_gguf_metadata(path: &Path) -> LlmResult<GgufMetadata> {
 ///
 /// Uses the architecture name and available metadata to recommend
 /// a [`crate::types::ChatTemplate`] variant.
+///
+/// # Returns
+///
+/// - `Some(template_name)` when a template can be inferred from the model
+///   metadata or a known architecture.
+/// - `None` when the architecture is unknown and no metadata template is
+///   present. In this case callers should fall back to a portable default
+///   such as `ChatML` (or `Raw` if no formatting is desired).
 #[must_use]
 pub fn infer_chat_template(meta: &GgufMetadata) -> Option<String> {
     // If the model already has a chat template in metadata, use it
@@ -457,12 +465,19 @@ pub fn infer_chat_template(meta: &GgufMetadata) -> Option<String> {
         "t5" | "t5encoder" => Some("chatml".to_string()),
         "openelm" => Some("chatml".to_string()),
         "chameleon" => Some("chatml".to_string()),
+        "" => {
+            log::info!(
+                "No architecture detected in GGUF metadata; cannot infer chat template"
+            );
+            None
+        }
         _ => {
             log::info!(
-                "Unknown architecture '{}', defaulting to ChatML template",
+                "Unknown architecture '{}', cannot infer chat template; \
+                 caller should fall back to ChatML or Raw",
                 meta.architecture.as_deref().unwrap_or("unknown")
             );
-            Some("chatml".to_string())
+            None
         }
     }
 }
@@ -1070,9 +1085,24 @@ mod tests {
     }
 
     #[test]
-    fn test_infer_chat_template_unknown_defaults_to_chatml() {
+    fn test_infer_chat_template_deepseek() {
+        let meta = GgufMetadata { architecture: Some("deepseek".into()), ..Default::default() };
+        assert_eq!(infer_chat_template(&meta), Some("deepseek".into()));
+
+        let meta = GgufMetadata { architecture: Some("deepseek3".into()), ..Default::default() };
+        assert_eq!(infer_chat_template(&meta), Some("deepseek".into()));
+    }
+
+    #[test]
+    fn test_infer_chat_template_unknown_returns_none() {
         let meta = GgufMetadata { architecture: Some("unknown-arch".into()), ..Default::default() };
-        assert_eq!(infer_chat_template(&meta), Some("chatml".into()));
+        assert_eq!(infer_chat_template(&meta), None);
+    }
+
+    #[test]
+    fn test_infer_chat_template_no_architecture_returns_none() {
+        let meta = GgufMetadata::default();
+        assert_eq!(infer_chat_template(&meta), None);
     }
 
     // -----------------------------------------------------------------------

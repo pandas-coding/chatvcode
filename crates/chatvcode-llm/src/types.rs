@@ -460,6 +460,10 @@ impl ChatMessage {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ChatTemplate {
     /// Auto-detect from model metadata (falls back to `ChatML` if not found).
+    ///
+    /// When no model metadata is available, `Auto` behaves identically to
+    /// `ChatML` to maximize portability. Callers that need a different
+    /// fallback can explicitly select [`Self::Raw`] or another template.
     Auto,
 
     /// Raw text, no template formatting applied.
@@ -472,6 +476,10 @@ pub enum ChatTemplate {
     /// Llama 3 format.
     /// Format: `<|begin_of_text|><|start_header_id|>role<|end_header_id|>\n\ncontent<|eot_id|>`
     Llama3,
+
+    /// DeepSeek 2.5 / V3 format.
+    /// Format: `<｜begin▁of▁sentence｜>system\n\n<｜User｜>content<｜Assistant｜>`
+    DeepSeek,
 
     /// Custom jinja template string.
     Custom(String),
@@ -486,6 +494,7 @@ impl ChatTemplate {
             Self::Raw => Some("raw"),
             Self::ChatML => Some("chatml"),
             Self::Llama3 => Some("llama3"),
+            Self::DeepSeek => Some("deepseek"),
             Self::Custom(_) => None, // handled separately
         }
     }
@@ -502,7 +511,8 @@ impl ChatTemplate {
     /// Format a list of chat messages into a prompt string using this template.
     ///
     /// This is a pure-Rust implementation that does not require `llama.cpp` FFI.
-    /// It supports `Auto` (falls back to `ChatML`), `Raw`, `ChatML`, and `Llama3`.
+    /// It supports `Auto` (falls back to `ChatML`), `Raw`, `ChatML`, `Llama3`,
+    /// and `DeepSeek`.
     ///
     /// For `Custom` templates, this returns an error — callers should use
     /// the FFI-based `LlamaService::format_prompt` instead.
@@ -534,10 +544,12 @@ impl ChatTemplate {
             }
             Self::ChatML => Ok(Self::format_chatml(messages, add_generation_prompt)),
             Self::Llama3 => Ok(Self::format_llama3(messages, add_generation_prompt)),
+            Self::DeepSeek => Ok(Self::format_deepseek(messages, add_generation_prompt)),
             Self::Auto => {
                 // Auto falls back to ChatML — in production use, the model's
                 // own template (discovered via GGUF metadata) is preferred,
-                // but this provides a safe default.
+                // but this provides a safe default. Users needing a different
+                // fallback can select `Raw` or another template explicitly.
                 Ok(Self::format_chatml(messages, add_generation_prompt))
             }
             Self::Custom(tmpl) => {
@@ -606,6 +618,45 @@ impl ChatTemplate {
 
         if add_generation_prompt {
             prompt.push_str("<|start_header_id|>assistant<|end_header_id|>\n\n");
+        }
+
+        prompt
+    }
+
+    /// Format messages using DeepSeek 2.5 / V3 template.
+    ///
+    /// This mirrors the `deepseek3` template used by `llama.cpp`:
+    /// ```text
+    /// <｜begin▁of▁sentence｜>system content
+    ///
+    /// <｜User｜>user content<｜Assistant｜>assistant content<｜end▁of▁sentence｜>
+    /// <｜Assistant｜>
+    /// ```
+    fn format_deepseek(messages: &[ChatMessage], add_generation_prompt: bool) -> String {
+        let mut prompt = String::new();
+
+        for msg in messages {
+            match msg.role.as_str() {
+                "system" => {
+                    prompt.push_str("<｜begin▁of▁sentence｜>");
+                    prompt.push_str(&msg.content);
+                    prompt.push_str("\n\n");
+                }
+                "user" => {
+                    prompt.push_str("<｜User｜>");
+                    prompt.push_str(&msg.content);
+                }
+                _ => {
+                    // assistant and any other role
+                    prompt.push_str("<｜Assistant｜>");
+                    prompt.push_str(&msg.content);
+                    prompt.push_str("<｜end▁of▁sentence｜>");
+                }
+            }
+        }
+
+        if add_generation_prompt {
+            prompt.push_str("<｜Assistant｜>");
         }
 
         prompt
@@ -1360,6 +1411,9 @@ fn uuid_like_id() -> String {
 mod tests {
     use super::*;
 
+    #[allow(unused_imports)]
+    use insta::assert_snapshot;
+
     #[test]
     fn test_llm_config_defaults() {
         let config = LlmConfig::default();
@@ -1451,10 +1505,87 @@ mod tests {
         assert_eq!(ChatTemplate::Raw.template_name(), Some("raw"));
         assert_eq!(ChatTemplate::ChatML.template_name(), Some("chatml"));
         assert_eq!(ChatTemplate::Llama3.template_name(), Some("llama3"));
+        assert_eq!(ChatTemplate::DeepSeek.template_name(), Some("deepseek"));
         assert_eq!(
             ChatTemplate::Custom("{{ bos_token }}".into()).custom_template(),
             Some("{{ bos_token }}")
         );
+    }
+
+    #[test]
+    fn test_chat_template_format_raw() {
+        let messages = vec![
+            ChatMessage::system("You are helpful."),
+            ChatMessage::user("Hello"),
+        ];
+        let prompt = ChatTemplate::Raw.format(&messages, true).unwrap();
+        assert_eq!(prompt, "You are helpful.\n\nHello");
+    }
+
+    #[test]
+    fn test_chat_template_format_chatml() {
+        let messages = vec![
+            ChatMessage::system("You are helpful."),
+            ChatMessage::user("Hello"),
+        ];
+        let prompt = ChatTemplate::ChatML.format(&messages, true).unwrap();
+        assert!(prompt.contains("<|im_start|>system"));
+        assert!(prompt.contains("<|im_start|>user"));
+        assert!(prompt.ends_with("<|im_start|>assistant\n"));
+    }
+
+    #[test]
+    fn test_chat_template_format_llama3() {
+        let messages = vec![
+            ChatMessage::system("You are helpful."),
+            ChatMessage::user("Hello"),
+        ];
+        let prompt = ChatTemplate::Llama3.format(&messages, true).unwrap();
+        assert!(prompt.starts_with("<|begin_of_text|>"));
+        assert!(prompt.contains("<|start_header_id|>system<|end_header_id|>\n\nYou are helpful."));
+        assert!(prompt.contains("<|start_header_id|>assistant<|end_header_id|>\n\n"));
+    }
+
+    #[test]
+    fn test_chat_template_format_deepseek() {
+        let messages = vec![
+            ChatMessage::system("You are helpful."),
+            ChatMessage::user("Hello"),
+        ];
+        let prompt = ChatTemplate::DeepSeek.format(&messages, true).unwrap();
+        assert!(prompt.starts_with("<｜begin▁of▁sentence｜>"));
+        assert!(prompt.contains("<｜User｜>Hello"));
+        assert!(prompt.ends_with("<｜Assistant｜>"));
+    }
+
+    #[test]
+    fn test_chat_template_format_deepseek_with_assistant() {
+        let messages = vec![
+            ChatMessage::user("Hello"),
+            ChatMessage::assistant("Hi there!"),
+        ];
+        let prompt = ChatTemplate::DeepSeek.format(&messages, false).unwrap();
+        assert!(prompt.contains("<｜User｜>Hello"));
+        assert!(prompt.contains("<｜Assistant｜>Hi there!<｜end▁of▁sentence｜>"));
+        assert!(!prompt.ends_with("<｜Assistant｜>"));
+    }
+
+    #[test]
+    fn test_chat_template_format_auto_fallback_to_chatml() {
+        let messages = vec![
+            ChatMessage::system("You are helpful."),
+            ChatMessage::user("Hello"),
+        ];
+        let auto = ChatTemplate::Auto.format(&messages, true).unwrap();
+        let chatml = ChatTemplate::ChatML.format(&messages, true).unwrap();
+        assert_eq!(auto, chatml);
+    }
+
+    #[test]
+    fn test_chat_template_format_custom_errors() {
+        let messages = vec![ChatMessage::user("Hello")];
+        let result = ChatTemplate::Custom("{{ messages }}".into()).format(&messages, true);
+        assert!(result.is_err());
     }
 
     #[test]
@@ -1764,5 +1895,57 @@ mod tests {
         assert_eq!(restored.messages(), session.messages());
         // KV cache state is NOT persisted (it's runtime state)
         assert_eq!(restored.kv_cache_state(), 0);
+    }
+
+    // -----------------------------------------------------------------------
+    // Chat template snapshot tests
+    // -----------------------------------------------------------------------
+
+    fn chat_template_fixture_messages() -> Vec<ChatMessage> {
+        vec![
+            ChatMessage::system("You are a helpful coding assistant."),
+            ChatMessage::user("What does the `main` function do?"),
+            ChatMessage::assistant("It prints a greeting."),
+        ]
+    }
+
+    #[test]
+    fn snapshot_chat_template_chatml() {
+        let prompt = ChatTemplate::ChatML
+            .format(&chat_template_fixture_messages(), true)
+            .unwrap();
+        assert_snapshot!(prompt);
+    }
+
+    #[test]
+    fn snapshot_chat_template_llama3() {
+        let prompt = ChatTemplate::Llama3
+            .format(&chat_template_fixture_messages(), true)
+            .unwrap();
+        assert_snapshot!(prompt);
+    }
+
+    #[test]
+    fn snapshot_chat_template_deepseek() {
+        let prompt = ChatTemplate::DeepSeek
+            .format(&chat_template_fixture_messages(), true)
+            .unwrap();
+        assert_snapshot!(prompt);
+    }
+
+    #[test]
+    fn snapshot_chat_template_raw() {
+        let prompt = ChatTemplate::Raw
+            .format(&chat_template_fixture_messages(), true)
+            .unwrap();
+        assert_snapshot!(prompt);
+    }
+
+    #[test]
+    fn snapshot_chat_template_auto_fallback() {
+        let prompt = ChatTemplate::Auto
+            .format(&chat_template_fixture_messages(), true)
+            .unwrap();
+        assert_snapshot!(prompt);
     }
 }

@@ -809,6 +809,7 @@ fn parse_chat_template(template: &str) -> Result<ChatTemplate, ChatVCodeError> {
         "raw" => Ok(ChatTemplate::Raw),
         "chatml" => Ok(ChatTemplate::ChatML),
         "llama3" | "llama-3" => Ok(ChatTemplate::Llama3),
+        "deepseek" | "deepseek2" | "deepseek3" | "deepseek-v3" => Ok(ChatTemplate::DeepSeek),
         _ => Ok(ChatTemplate::Custom(template.to_string())),
     }
 }
@@ -2122,6 +2123,22 @@ mod tests {
         assert_eq!(parse_chat_template("llama3").unwrap(), ChatTemplate::Llama3);
         assert_eq!(parse_chat_template("llama-3").unwrap(), ChatTemplate::Llama3);
         assert_eq!(parse_chat_template("Llama3").unwrap(), ChatTemplate::Llama3);
+    }
+
+    #[test]
+    fn test_parse_chat_template_deepseek() {
+        assert_eq!(
+            parse_chat_template("deepseek").unwrap(),
+            ChatTemplate::DeepSeek
+        );
+        assert_eq!(
+            parse_chat_template("deepseek3").unwrap(),
+            ChatTemplate::DeepSeek
+        );
+        assert_eq!(
+            parse_chat_template("DeepSeek-V3").unwrap(),
+            ChatTemplate::DeepSeek
+        );
     }
 
     #[test]

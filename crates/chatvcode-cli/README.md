@@ -108,6 +108,92 @@ chatvcode chat "Explain error handling" --path=./my-project \
 >     --embedding-model=/path/to/embedding.gguf
 > ```
 
+### 模式三：交互式多轮对话（`--interactive`）
+
+在单次命令基础上增加 `--interactive` 标志，进入多轮 REPL 模式。对话历史在多次问答间保留，支持 KV cache 复用加速后续轮次推理。
+
+```bash
+# 纯 LLM 交互式对话
+chatvcode chat "hello" --retrieval=false --interactive
+
+# RAG 增强交互式对话（需先建索引）
+chatvcode chat "hello" --path=./my-project --interactive
+
+# 指定模型和参数
+chatvcode chat "hello" --retrieval=false --interactive \
+    --model=/path/to/model.gguf \
+    --temperature=0.5 \
+    --max-tokens=1024
+```
+
+进入交互模式后，终端显示 `💬 >` 提示符，直接输入问题即可提问。输入斜杠命令（以 `/` 开头）执行控制操作。
+
+#### 斜杠命令
+
+| 命令              | 缩写       | 说明                                                              |
+| ----------------- | ---------- | ----------------------------------------------------------------- |
+| `/quit`           | `/q`       | 退出交互式模式                                                    |
+| `/help`           | `/h`、`/?` | 显示所有可用命令                                                  |
+| `/clear`          | —          | 清空对话历史（保留系统提示）                                      |
+| `/sources`        | `/src`     | 显示上一次回答引用的代码来源（文件路径、行号、符号名、相似度分数） |
+| `/retry`          | `/r`       | 重新发送上一条问题                                                |
+| `/save [path]`    | —          | 将当前会话保存为 JSON 文件（默认路径 `~/.chatvcode/session.json`） |
+| `/load [path]`    | —          | 从 JSON 文件恢复会话（默认路径 `~/.chatvcode/session.json`）       |
+| `/history`        | —          | 显示对话历史摘要（轮数、预估 token 数、消息预览）                 |
+
+#### 交互模式示例
+
+```
+🎤 Interactive chat mode (type `/quit` to exit, `/help` for commands)
+📂 Project: ./my-project
+   Mode: RAG (with code context)
+
+💬 > What does the main function do?
+--- Response ---
+The main function initializes the application and starts the event loop.
+--- End ---
+📎 Sources (2):
+  [1] src/main.rs:10 (main) [score: 0.920]
+  [2] src/app.rs:42 (run) [score: 0.850]
+
+💬 > /sources
+📎 Sources (2):
+  [1] src/main.rs:10 (main) [score: 0.920]
+  [2] src/app.rs:42 (run) [score: 0.850]
+
+💬 > /save
+✓ Session saved to /home/user/.chatvcode/session.json
+
+💬 > /quit
+👋 Goodbye!
+```
+
+#### 会话持久化
+
+`/save` 和 `/load` 命令支持将对话历史序列化为 JSON 并在后续会话中恢复：
+
+```bash
+# 在交互模式中保存到自定义路径
+💬 > /save ./my-session.json
+
+# 下次启动时恢复（进入交互模式后执行 /load）
+chatvcode chat "hello" --retrieval=false --interactive
+💬 > /load ./my-session.json
+✓ Session loaded from ./my-session.json (3 turns, ~450 tokens)
+```
+
+> 会话 JSON 保存对话消息和系统提示，但不保存 chat 模板和 KV cache 状态。恢复时需使用相同的 `--template` 参数。
+
+#### 快捷键
+
+| 按键    | 说明                              |
+| ------- | --------------------------------- |
+| `↑`/`↓` | 浏览输入历史                      |
+| `Ctrl+C`| 清除当前输入行（不退出交互模式）  |
+| `Ctrl+D`| 退出交互式模式（EOF）             |
+
+输入历史自动保存到 `~/.chatvcode/history`，跨会话保留。
+
 ## 所有 `chat` 命令参数
 
 | 参数                     | 默认值      | 说明                                                        |
@@ -134,6 +220,7 @@ chatvcode chat "Explain error handling" --path=./my-project \
 | `--min-score`            | —           | 最小相似度阈值（0.0–1.0）                                   |
 | `--context-token-budget` | `0`（不限） | 分配给上下文的 token 预算                                   |
 | `--retrieval`            | `true`      | 启用 RAG 检索（用 `--retrieval=false` 切换为纯 LLM 模式）   |
+| `--interactive`          | `false`     | 启用交互式多轮对话 REPL 模式                                |
 | `--llm-verbose-log`      | `false`     | 启用 llama.cpp/ggml 详细日志（tensor 创建、backend 注册等） |
 
 > **传参格式**：所有参数的统一传参格式为 `--<arg>=<value>`。布尔参数（`--retrieval`、`--stream`、`--llm-verbose-log` 等）还可使用 `--arg`（等价于 `--arg=true`）的简写形式。

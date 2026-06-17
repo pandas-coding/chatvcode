@@ -15,6 +15,7 @@ use chatvcode_llm::{
 use chatvcode_parser::parse_source;
 use chatvcode_vdb::{EmbeddingConfig, EmbeddingService};
 use clap::{Parser, Subcommand};
+use rustyline::DefaultEditor;
 
 pub use chatvcode_core;
 pub use chatvcode_llm;
@@ -899,7 +900,18 @@ fn index_with_gguf(
 ///
 /// Creates a [`ChatSession`] and enters a read-eval-print loop where each
 /// user message is answered with conversation history preserved across turns.
-/// Supports `/quit`, `/help`, `/clear`, and `/sources` commands.
+///
+/// Uses `rustyline` for line editing, history persistence, and tab completion.
+///
+/// Supported commands:
+/// - `/quit`, `/q` — Exit interactive mode
+/// - `/help`, `/h` — Show available commands
+/// - `/clear` — Clear conversation history
+/// - `/sources`, `/src` — Show sources from the last response
+/// - `/retry`, `/r` — Resend the last question
+/// - `/save [path]` — Save session to JSON file
+/// - `/load [path]` — Restore session from JSON file
+/// - `/history` — Show conversation history summary
 ///
 /// When `--retrieval=false` (LLM-only mode), queries go directly to the LLM.
 /// When retrieval is enabled, each turn performs a fresh semantic search.
@@ -928,12 +940,10 @@ fn run_interactive_chat(
         ));
     }
 
-    // Set context limits for history trimming
     session = session
         .max_context_tokens(args.n_ctx as usize)
         .reserve_for_response(args.max_tokens.max(512) as usize);
 
-    // --- Load embedding service if RAG mode ---
     let embedding_service: Option<Box<dyn EmbeddingService>> = if args.retrieval {
         match setup_embedding_for_interactive(args) {
             Ok(svc) => Some(svc),
@@ -950,189 +960,330 @@ fn run_interactive_chat(
     let mut last_sources: Vec<SourceReference> = Vec::new();
     let mut last_question: Option<String> = None;
 
+    let mut rl = DefaultEditor::new().map_err(|e| {
+        ChatVCodeError::internal(format!("Failed to initialize line editor: {e}"))
+    })?;
+
+    let history_path = interactive_history_path();
+    if let Some(ref hp) = history_path {
+        if rl.load_history(hp).is_err() {
+            // First run — no history file yet
+        }
+    }
+
+    let default_session_path = interactive_default_session_path();
+
     loop {
-        eprintln!();
-        eprint!("💬 > ");
-        io::Write::flush(&mut io::stdout()).ok();
+        let readline = rl.readline("💬 > ");
 
-        let mut line = String::new();
-        match io::stdin().read_line(&mut line) {
-            Ok(0) => {
-                eprintln!();
-                break;
-            }
-            Ok(_) => {
-                // Continue processing
-            }
-            Err(e) => {
-                eprintln!("✗ Failed to read input: {e}");
-                break;
-            }
-        }
-
-        let input = line.trim().to_string();
-
-        if input.is_empty() {
-            continue;
-        }
-
-        // --- Handle commands ---
-        if input.starts_with('/') {
-            match input.as_str() {
-                "/quit" | "/exit" | "/q" => {
-                    eprintln!("👋 Goodbye!");
-                    break;
-                }
-                "/help" | "/h" | "/?" => {
-                    print_interactive_help();
+        match readline {
+            Ok(line) => {
+                let input = line.trim().to_string();
+                if input.is_empty() {
                     continue;
                 }
-                "/clear" => {
-                    session.clear();
-                    last_sources.clear();
-                    last_question = None;
-                    eprintln!("✓ Conversation history cleared.");
-                    continue;
-                }
-                "/sources" | "/src" => {
-                    if last_sources.is_empty() {
-                        eprintln!("(No sources from the last response)");
-                    } else {
-                        for (i, src) in last_sources.iter().enumerate() {
-                            eprintln!(
-                                "  [{}] {}:{} ({})",
-                                i + 1,
-                                src.file_path.display(),
-                                src.start_line,
-                                src.symbol_name.as_deref().unwrap_or("unknown")
+
+                rl.add_history_entry(&input).ok();
+
+                // --- Handle commands ---
+                if input.starts_with('/') {
+                    let cmd_result = handle_interactive_command(
+                        &input,
+                        &mut session,
+                        &mut last_sources,
+                        &mut last_question,
+                        chat_template,
+                        &default_session_path,
+                    );
+                    match cmd_result {
+                        InteractiveAction::Continue => continue,
+                        InteractiveAction::Quit => break,
+                        InteractiveAction::ProcessQuestion(q) => {
+                            // /retry — fall through to inference with q
+                            run_interactive_turn(
+                                &q,
+                                llm,
+                                &embedding_service,
+                                args,
+                                generation_params,
+                                &mut session,
+                                &mut last_sources,
+                                &mut last_question,
                             );
                         }
                     }
-                    continue;
-                }
-                "/retry" | "/r" => {
-                    if let Some(ref q) = last_question {
-                        eprintln!("🔄 Retrying: {q}");
-                        // Fall through with the last question
-                    } else {
-                        eprintln!("(No previous question to retry)");
-                        continue;
-                    }
-                }
-                cmd => {
-                    eprintln!("Unknown command: {cmd}. Type /help for commands.");
-                    continue;
+                } else {
+                    last_question = Some(input.clone());
+                    run_interactive_turn(
+                        &input,
+                        llm,
+                        &embedding_service,
+                        args,
+                        generation_params,
+                        &mut session,
+                        &mut last_sources,
+                        &mut last_question,
+                    );
                 }
             }
+            Err(rustyline::error::ReadlineError::Interrupted) => {
+                eprintln!("^C");
+                continue;
+            }
+            Err(rustyline::error::ReadlineError::Eof) => {
+                eprintln!("👋 Goodbye!");
+                break;
+            }
+            Err(e) => {
+                eprintln!("✗ Input error: {e}");
+                break;
+            }
         }
+    }
 
-        let question = if input == "/retry" || input == "/r" {
-            last_question.clone().unwrap_or_default()
-        } else {
-            last_question = Some(input.clone());
-            input.clone()
-        };
+    if let Some(ref hp) = history_path {
+        rl.save_history(hp).ok();
+    }
 
-        if question.is_empty() {
-            continue;
+    Ok(())
+}
+
+/// Result of processing an interactive command.
+enum InteractiveAction {
+    Continue,
+    Quit,
+    ProcessQuestion(String),
+}
+
+/// Resolve the history file path (~/.chatvcode/history).
+fn interactive_history_path() -> Option<PathBuf> {
+    dirs::home_dir().map(|h| h.join(".chatvcode").join("history"))
+}
+
+/// Resolve the default session save path (~/.chatvcode/session.json).
+fn interactive_default_session_path() -> PathBuf {
+    dirs::home_dir()
+        .map(|h| h.join(".chatvcode").join("session.json"))
+        .unwrap_or_else(|| PathBuf::from("session.json"))
+}
+
+/// Handle an interactive slash command.
+fn handle_interactive_command(
+    input: &str,
+    session: &mut ChatSession,
+    last_sources: &mut Vec<SourceReference>,
+    last_question: &mut Option<String>,
+    chat_template: &ChatTemplate,
+    default_session_path: &PathBuf,
+) -> InteractiveAction {
+    let parts: Vec<&str> = input.splitn(2, ' ').collect();
+    let cmd = parts[0];
+    let arg = parts.get(1).map(|s| s.trim()).filter(|s| !s.is_empty());
+
+    match cmd {
+        "/quit" | "/exit" | "/q" => {
+            eprintln!("👋 Goodbye!");
+            InteractiveAction::Quit
         }
+        "/help" | "/h" | "/?" => {
+            print_interactive_help();
+            InteractiveAction::Continue
+        }
+        "/clear" => {
+            session.clear();
+            last_sources.clear();
+            *last_question = None;
+            eprintln!("✓ Conversation history cleared.");
+            InteractiveAction::Continue
+        }
+        "/sources" | "/src" => {
+            display_interactive_sources(last_sources);
+            InteractiveAction::Continue
+        }
+        "/retry" | "/r" => {
+            if let Some(q) = last_question {
+                eprintln!("🔄 Retrying: {q}");
+                InteractiveAction::ProcessQuestion(q.clone())
+            } else {
+                eprintln!("(No previous question to retry)");
+                InteractiveAction::Continue
+            }
+        }
+        "/save" => {
+            let path = arg
+                .map(PathBuf::from)
+                .unwrap_or_else(|| default_session_path.clone());
+            match session.to_json() {
+                Ok(json) => match std::fs::write(&path, &json) {
+                    Ok(()) => {
+                        eprintln!("✓ Session saved to {}", path.display());
+                    }
+                    Err(e) => {
+                        eprintln!("✗ Failed to save session: {e}");
+                    }
+                },
+                Err(e) => {
+                    eprintln!("✗ Failed to serialize session: {e}");
+                }
+            }
+            InteractiveAction::Continue
+        }
+        "/load" => {
+            let path = arg
+                .map(PathBuf::from)
+                .unwrap_or_else(|| default_session_path.clone());
+            match std::fs::read_to_string(&path) {
+                Ok(json) => match ChatSession::from_json(&json, chat_template.clone()) {
+                    Ok(loaded) => {
+                        let turns = loaded.turn_count();
+                        let tokens = loaded.estimated_tokens();
+                        *session = loaded
+                            .max_context_tokens(session.context_token_limit())
+                            .reserve_for_response(session.response_token_reserve());
+                        last_sources.clear();
+                        *last_question = None;
+                        eprintln!(
+                            "✓ Session loaded from {} ({} turns, ~{} tokens)",
+                            path.display(),
+                            turns,
+                            tokens
+                        );
+                    }
+                    Err(e) => {
+                        eprintln!("✗ Failed to deserialize session: {e}");
+                    }
+                },
+                Err(e) => {
+                    eprintln!("✗ Failed to read session file: {e}");
+                }
+            }
+            InteractiveAction::Continue
+        }
+        "/history" => {
+            display_interactive_history(session);
+            InteractiveAction::Continue
+        }
+        _ => {
+            eprintln!("Unknown command: {cmd}. Type /help for commands.");
+            InteractiveAction::Continue
+        }
+    }
+}
 
-        last_sources.clear();
+/// Run a single interactive turn (RAG or LLM-only).
+fn run_interactive_turn(
+    question: &str,
+    llm: &dyn LlmService,
+    embedding_service: &Option<Box<dyn EmbeddingService>>,
+    args: &ChatArgs,
+    generation_params: &GenerationParams,
+    session: &mut ChatSession,
+    last_sources: &mut Vec<SourceReference>,
+    last_question: &mut Option<String>,
+) {
+    last_sources.clear();
+    *last_question = Some(question.to_string());
 
-        // --- RAG or LLM-only inference ---
-        if let Some(ref embed_svc) = embedding_service {
-            // RAG path: build prompt with context + history
-            match run_interactive_rag_turn(
-                &question,
+    if let Some(embed_svc) = embedding_service {
+        if args.stream {
+            match run_interactive_rag_turn_stream(
+                question,
                 llm,
                 &**embed_svc,
                 args,
                 generation_params,
-                &session,
+                session,
             ) {
                 Ok((response, sources)) => {
-                    last_sources = sources;
-                    if args.stream {
-                        // Streaming already displayed by run_interactive_rag_turn
-                        session.add_user_message(&question);
-                        session.add_assistant_message(&response);
-                    } else {
-                        display_interactive_response(&response, &last_sources, false);
-                        session.add_user_message(&question);
-                        session.add_assistant_message(&response);
-                    }
+                    *last_sources = sources;
+                    session.add_user_message(question);
+                    session.add_assistant_message(&response);
                 }
                 Err(e) => {
                     eprintln!("✗ RAG chat failed: {e}");
                 }
             }
         } else {
-            // LLM-only path: use ChatSession's multi-turn
-            if args.stream {
-                match session.chat_stream(&question, llm, generation_params) {
-                    Ok(rx) => {
-                        eprintln!("--- Response ---");
-                        let mut full_text = String::new();
-                        let mut token_count = 0u32;
-                        let stdout = io::stdout();
-                        let mut handle = stdout.lock();
-
-                        loop {
-                            match rx.recv_timeout(std::time::Duration::from_secs(120)) {
-                                Ok(event) => match event {
-                                    StreamEvent::Started => {}
-                                    StreamEvent::Token(token) => {
-                                        print!("{token}");
-                                        handle.flush().ok();
-                                        full_text.push_str(&token);
-                                        token_count += 1;
-                                    }
-                                    StreamEvent::Completed => break,
-                                    StreamEvent::Cancelled => {
-                                        eprintln!("\n⚠ Generation was cancelled.");
-                                        break;
-                                    }
-                                    StreamEvent::Error(msg) => {
-                                        eprintln!("\n✗ Error: {msg}");
-                                        break;
-                                    }
-                                },
-                                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                                    eprintln!("\n✗ Generation timed out.");
-                                    break;
-                                }
-                                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-                                    break;
-                                }
-                            }
-                        }
-                        drop(handle);
-                        eprintln!();
-                        eprintln!("--- End ---");
-
-                        if !full_text.is_empty() {
-                            session.add_assistant_message(&full_text);
-                        }
-                        eprintln!("  Tokens: {token_count}");
-                    }
-                    Err(e) => {
-                        eprintln!("✗ LLM error: {e}");
-                    }
+            match run_interactive_rag_turn(
+                question,
+                llm,
+                &**embed_svc,
+                args,
+                generation_params,
+                session,
+            ) {
+                Ok((response, sources)) => {
+                    *last_sources = sources;
+                    display_interactive_response(&response, last_sources, false);
+                    session.add_user_message(question);
+                    session.add_assistant_message(&response);
                 }
-            } else {
-                match session.chat(&question, llm, generation_params) {
-                    Ok(response) => {
-                        display_interactive_response(&response.text, &[], false);
-                    }
-                    Err(e) => {
-                        eprintln!("✗ LLM error: {e}");
-                    }
+                Err(e) => {
+                    eprintln!("✗ RAG chat failed: {e}");
                 }
             }
         }
-    }
+    } else if args.stream {
+        match session.chat_stream(question, llm, generation_params) {
+            Ok(rx) => {
+                eprintln!("--- Response ---");
+                let mut full_text = String::new();
+                let mut token_count = 0u32;
+                let stdout = io::stdout();
+                let mut handle = stdout.lock();
 
-    Ok(())
+                loop {
+                    match rx.recv_timeout(std::time::Duration::from_secs(120)) {
+                        Ok(event) => match event {
+                            StreamEvent::Started => {}
+                            StreamEvent::Token(token) => {
+                                print!("{token}");
+                                handle.flush().ok();
+                                full_text.push_str(&token);
+                                token_count += 1;
+                            }
+                            StreamEvent::Completed => break,
+                            StreamEvent::Cancelled => {
+                                eprintln!("\n⚠ Generation was cancelled.");
+                                break;
+                            }
+                            StreamEvent::Error(msg) => {
+                                eprintln!("\n✗ Error: {msg}");
+                                break;
+                            }
+                        },
+                        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                            eprintln!("\n✗ Generation timed out.");
+                            break;
+                        }
+                        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                            break;
+                        }
+                    }
+                }
+                drop(handle);
+                eprintln!();
+                eprintln!("--- End ---");
+
+                if !full_text.is_empty() {
+                    session.add_assistant_message(&full_text);
+                }
+                eprintln!("  Tokens: {token_count}");
+            }
+            Err(e) => {
+                eprintln!("✗ LLM error: {e}");
+            }
+        }
+    } else {
+        match session.chat(question, llm, generation_params) {
+            Ok(response) => {
+                display_interactive_response(&response.text, &[], false);
+            }
+            Err(e) => {
+                eprintln!("✗ LLM error: {e}");
+            }
+        }
+    }
 }
 
 /// Set up embedding service for interactive chat.
@@ -1193,13 +1344,14 @@ fn setup_embedding_for_interactive(
         .map_err(|e| {
             ChatVCodeError::internal(format!("Failed to load GGUF embedding model: {e}"))
         })?;
+        eprintln!("✓ GGUF embedding model loaded (dim={}).", embed_svc.dimension());
         Ok(Box::new(LlamaEmbeddingAdapter::new(embed_svc)))
     } else {
         // Auto-discover
         match chatvcode_llm::auto_discover_model() {
             Ok(model_path) => {
                 let n_threads = args.n_threads.unwrap_or_else(|| num_cpus::get() as i32);
-                eprintln!("🔍 Auto-loaded GGUF embedding model from {}...", model_path.display());
+                eprintln!("🔍 Auto-loading GGUF embedding model from {}...", model_path.display());
                 let embed_svc = LlamaEmbeddingService::from_path(
                     &model_path,
                     512,
@@ -1210,6 +1362,7 @@ fn setup_embedding_for_interactive(
                 .map_err(|e| {
                     ChatVCodeError::internal(format!("Failed to load GGUF embedding model: {e}"))
                 })?;
+                eprintln!("✓ GGUF embedding model loaded (dim={}).", embed_svc.dimension());
                 Ok(Box::new(LlamaEmbeddingAdapter::new(embed_svc)))
             }
             Err(e) => Err(ChatVCodeError::invalid_input(format!(
@@ -1251,12 +1404,97 @@ fn run_interactive_rag_turn(
         chat_options = chat_options.with_min_score(min_score);
     }
 
-    // Use chat_with_context for the RAG pipeline
-    // Note: chat_with_context internally runs a single-turn query.
-    // For multi-turn RAG, we augment with history by including it in the system prompt.
     let response = chat_with_context(question, llm, embedding_service, &chat_options)?;
 
     Ok((response.answer, response.sources))
+}
+
+/// Run a streaming RAG turn within interactive chat.
+///
+/// Uses `chat_with_context_stream` so tokens are displayed in real-time
+/// instead of blocking until the full response is ready.
+fn run_interactive_rag_turn_stream(
+    question: &str,
+    llm: &dyn LlmService,
+    embedding_service: &dyn EmbeddingService,
+    args: &ChatArgs,
+    generation_params: &GenerationParams,
+    session: &ChatSession,
+) -> Result<(String, Vec<SourceReference>), ChatVCodeError> {
+    let context_token_budget = if args.context_token_budget == 0 {
+        let reserved = generation_params.max_tokens as usize + 300;
+        (args.n_ctx as usize).saturating_sub(reserved)
+    } else {
+        args.context_token_budget
+    };
+
+    let mut chat_options = ChatOptions::new(&args.path)
+        .with_top_k(args.top_k_retrieval)
+        .with_chat_template(session.template().clone())
+        .with_generation_params(generation_params.clone())
+        .with_context_token_budget(context_token_budget);
+
+    if let Some(ref sys) = args.system_prompt {
+        chat_options = chat_options.system_prompt(sys);
+    }
+    if let Some(min_score) = args.min_score {
+        chat_options = chat_options.with_min_score(min_score);
+    }
+
+    let streaming =
+        chat_with_context_stream(question, llm, embedding_service, &chat_options)?;
+
+    if !streaming.sources.is_empty() {
+        eprintln!();
+        eprintln!("📚 Using {} context snippet(s):", streaming.sources.len());
+        for (i, src) in streaming.sources.iter().enumerate() {
+            eprintln!("  [{}] {} (score: {:.3})", i + 1, src.display_path(), src.score);
+        }
+        eprintln!();
+    }
+
+    eprintln!("--- Response ---");
+    let mut full_text = String::new();
+    let mut token_count = 0u32;
+    let stdout = io::stdout();
+    let mut handle = stdout.lock();
+
+    let rx = streaming.event_receiver;
+    loop {
+        match rx.recv_timeout(std::time::Duration::from_secs(120)) {
+            Ok(event) => match event {
+                StreamEvent::Started => {}
+                StreamEvent::Token(token) => {
+                    print!("{token}");
+                    handle.flush().ok();
+                    full_text.push_str(&token);
+                    token_count += 1;
+                }
+                StreamEvent::Completed => break,
+                StreamEvent::Cancelled => {
+                    eprintln!("\n⚠ Generation was cancelled.");
+                    break;
+                }
+                StreamEvent::Error(msg) => {
+                    eprintln!("\n✗ Error: {msg}");
+                    break;
+                }
+            },
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                eprintln!("\n✗ Generation timed out (120s).");
+                break;
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                break;
+            }
+        }
+    }
+    drop(handle);
+    eprintln!();
+    eprintln!("--- End ---");
+    eprintln!("  Tokens: ~{token_count}");
+
+    Ok((full_text, streaming.sources))
 }
 
 /// Display a response in interactive mode.
@@ -1264,30 +1502,61 @@ fn display_interactive_response(answer: &str, sources: &[SourceReference], _json
     eprintln!("--- Response ---");
     println!("{answer}");
     eprintln!("--- End ---");
-    if !sources.is_empty() {
+    display_interactive_sources(sources);
+    eprintln!();
+}
+
+/// Display source references in interactive mode.
+fn display_interactive_sources(sources: &[SourceReference]) {
+    if sources.is_empty() {
+        eprintln!("  (No sources from the last response)");
+    } else {
         eprintln!("📎 Sources ({n}):", n = sources.len());
         for (i, src) in sources.iter().enumerate() {
             eprintln!(
-                "  [{idx}] {path}:{line} ({kind})",
+                "  [{idx}] {path}:{line} ({kind}) [score: {score:.3}]",
                 idx = i + 1,
                 path = src.file_path.display(),
                 line = src.start_line,
-                kind = src.symbol_name.as_deref().unwrap_or("unknown")
+                kind = src.symbol_name.as_deref().unwrap_or("unknown"),
+                score = src.score,
             );
         }
     }
-    eprintln!();
+}
+
+/// Display conversation history summary in interactive mode.
+fn display_interactive_history(session: &ChatSession) {
+    let turns = session.turn_count();
+    let tokens = session.estimated_tokens();
+    let messages = session.messages();
+
+    if messages.is_empty() {
+        eprintln!("(No conversation history)");
+        return;
+    }
+
+    eprintln!("📜 History: {} turns, ~{} tokens", turns, tokens);
+    for (i, msg) in messages.iter().enumerate() {
+        let role = if msg.role == "user" { "You" } else { "Assistant" };
+        let preview: String = msg.content.chars().take(80).collect();
+        let suffix = if msg.content.len() > 80 { "..." } else { "" };
+        eprintln!("  [{}] {}: {}{}", i + 1, role, preview, suffix);
+    }
 }
 
 /// Print help for interactive chat commands.
 fn print_interactive_help() {
     eprintln!();
     eprintln!("  Interactive Chat Commands:");
-    eprintln!("    /quit, /q     Exit interactive mode");
-    eprintln!("    /help, /h     Show this help");
-    eprintln!("    /clear        Clear conversation history");
-    eprintln!("    /sources, /src Show sources from last response");
-    eprintln!("    /retry, /r    Resend the last question");
+    eprintln!("    /quit, /q       Exit interactive mode");
+    eprintln!("    /help, /h       Show this help");
+    eprintln!("    /clear          Clear conversation history");
+    eprintln!("    /sources, /src  Show sources from last response");
+    eprintln!("    /retry, /r      Resend the last question");
+    eprintln!("    /save [path]    Save session to JSON (default: ~/.chatvcode/session.json)");
+    eprintln!("    /load [path]    Load session from JSON (default: ~/.chatvcode/session.json)");
+    eprintln!("    /history        Show conversation history summary");
     eprintln!();
     eprintln!("  Or just type your question to ask the model.");
     eprintln!();
@@ -2258,5 +2527,197 @@ mod tests {
         let formatted = response.format_sources();
         assert!(formatted.contains("Sources:"));
         assert!(formatted.contains("src/main.rs"));
+    }
+
+    #[test]
+    fn test_interactive_command_quit() {
+        let mut session = ChatSession::new(ChatTemplate::ChatML);
+        let mut sources = Vec::new();
+        let mut last_q = None;
+        let default_path = PathBuf::from("/tmp/test_session.json");
+        let result = handle_interactive_command(
+            "/quit",
+            &mut session,
+            &mut sources,
+            &mut last_q,
+            &ChatTemplate::ChatML,
+            &default_path,
+        );
+        assert!(matches!(result, InteractiveAction::Quit));
+    }
+
+    #[test]
+    fn test_interactive_command_clear() {
+        let mut session = ChatSession::new(ChatTemplate::ChatML);
+        session.add_user_message("hello");
+        session.add_assistant_message("hi");
+        assert_eq!(session.len(), 2);
+
+        let mut sources = Vec::new();
+        let mut last_q = Some("hello".to_string());
+        let default_path = PathBuf::from("/tmp/test_session.json");
+        let result = handle_interactive_command(
+            "/clear",
+            &mut session,
+            &mut sources,
+            &mut last_q,
+            &ChatTemplate::ChatML,
+            &default_path,
+        );
+        assert!(matches!(result, InteractiveAction::Continue));
+        assert_eq!(session.len(), 0);
+        assert!(last_q.is_none());
+    }
+
+    #[test]
+    fn test_interactive_command_retry_no_history() {
+        let mut session = ChatSession::new(ChatTemplate::ChatML);
+        let mut sources = Vec::new();
+        let mut last_q: Option<String> = None;
+        let default_path = PathBuf::from("/tmp/test_session.json");
+        let result = handle_interactive_command(
+            "/retry",
+            &mut session,
+            &mut sources,
+            &mut last_q,
+            &ChatTemplate::ChatML,
+            &default_path,
+        );
+        assert!(matches!(result, InteractiveAction::Continue));
+    }
+
+    #[test]
+    fn test_interactive_command_retry_with_history() {
+        let mut session = ChatSession::new(ChatTemplate::ChatML);
+        let mut sources = Vec::new();
+        let mut last_q = Some("What is Rust?".to_string());
+        let default_path = PathBuf::from("/tmp/test_session.json");
+        let result = handle_interactive_command(
+            "/retry",
+            &mut session,
+            &mut sources,
+            &mut last_q,
+            &ChatTemplate::ChatML,
+            &default_path,
+        );
+        match result {
+            InteractiveAction::ProcessQuestion(q) => assert_eq!(q, "What is Rust?"),
+            _ => panic!("expected ProcessQuestion"),
+        }
+    }
+
+    #[test]
+    fn test_interactive_command_save_and_load() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let session_path = tmp.path().join("test_session.json");
+
+        let mut session = ChatSession::new(ChatTemplate::ChatML);
+        session.add_user_message("hello");
+        session.add_assistant_message("hi there");
+
+        let mut sources = Vec::new();
+        let mut last_q = None;
+
+        let result = handle_interactive_command(
+            &format!("/save {}", session_path.display()),
+            &mut session,
+            &mut sources,
+            &mut last_q,
+            &ChatTemplate::ChatML,
+            &session_path,
+        );
+        assert!(matches!(result, InteractiveAction::Continue));
+        assert!(session_path.exists());
+
+        let mut session2 = ChatSession::new(ChatTemplate::ChatML);
+        let result = handle_interactive_command(
+            &format!("/load {}", session_path.display()),
+            &mut session2,
+            &mut sources,
+            &mut last_q,
+            &ChatTemplate::ChatML,
+            &session_path,
+        );
+        assert!(matches!(result, InteractiveAction::Continue));
+        assert_eq!(session2.len(), 2);
+        assert_eq!(session2.turn_count(), 1);
+    }
+
+    #[test]
+    fn test_interactive_command_help() {
+        let mut session = ChatSession::new(ChatTemplate::ChatML);
+        let mut sources = Vec::new();
+        let mut last_q = None;
+        let default_path = PathBuf::from("/tmp/test_session.json");
+        let result = handle_interactive_command(
+            "/help",
+            &mut session,
+            &mut sources,
+            &mut last_q,
+            &ChatTemplate::ChatML,
+            &default_path,
+        );
+        assert!(matches!(result, InteractiveAction::Continue));
+    }
+
+    #[test]
+    fn test_interactive_command_unknown() {
+        let mut session = ChatSession::new(ChatTemplate::ChatML);
+        let mut sources = Vec::new();
+        let mut last_q = None;
+        let default_path = PathBuf::from("/tmp/test_session.json");
+        let result = handle_interactive_command(
+            "/foobar",
+            &mut session,
+            &mut sources,
+            &mut last_q,
+            &ChatTemplate::ChatML,
+            &default_path,
+        );
+        assert!(matches!(result, InteractiveAction::Continue));
+    }
+
+    #[test]
+    fn test_interactive_history_path() {
+        let path = interactive_history_path();
+        if let Some(p) = path {
+            assert!(p.to_string_lossy().contains(".chatvcode"));
+            assert!(p.to_string_lossy().contains("history"));
+        }
+    }
+
+    #[test]
+    fn test_interactive_default_session_path() {
+        let path = interactive_default_session_path();
+        assert!(path.to_string_lossy().contains("session.json"));
+    }
+
+    #[test]
+    fn test_display_interactive_sources_empty() {
+        display_interactive_sources(&[]);
+    }
+
+    #[test]
+    fn test_display_interactive_sources_with_data() {
+        let sources = vec![SourceReference {
+            chunk_id: "id1".to_string(),
+            file_path: PathBuf::from("src/main.rs"),
+            kind: chatvcode_core::ChunkKind::Function,
+            symbol_name: Some("main".to_string()),
+            start_line: 10,
+            end_line: 20,
+            score: 0.95,
+            snippet: "fn main() {}".to_string(),
+        }];
+        display_interactive_sources(&sources);
+    }
+
+    #[test]
+    fn test_session_context_token_limit_accessor() {
+        let session = ChatSession::new(ChatTemplate::ChatML)
+            .max_context_tokens(4096)
+            .reserve_for_response(512);
+        assert_eq!(session.context_token_limit(), 4096);
+        assert_eq!(session.response_token_reserve(), 512);
     }
 }

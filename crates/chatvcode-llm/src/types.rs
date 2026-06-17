@@ -1306,6 +1306,18 @@ impl ChatSession {
         &self.template
     }
 
+    /// Returns the max context token limit.
+    #[must_use]
+    pub const fn context_token_limit(&self) -> usize {
+        self.max_context_tokens
+    }
+
+    /// Returns the number of tokens reserved for the model response.
+    #[must_use]
+    pub const fn response_token_reserve(&self) -> usize {
+        self.reserve_for_response
+    }
+
     /// Returns the number of complete turns (user+assistant pairs).
     #[must_use]
     pub fn turn_count(&self) -> usize {

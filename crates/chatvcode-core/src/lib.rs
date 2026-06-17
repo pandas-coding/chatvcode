@@ -657,10 +657,15 @@ pub fn search_with_service(
         ChatVCodeError::internal("Embedding service returned no result for query")
     })?;
 
-    log::info!("Searching for top-{} similar chunks", options.top_k);
+    // Over-retrieve: fetch more candidates than needed so keyword re-ranking
+    // can promote exact-match chunks that the embedding model scored lower.
+    let overretrieve_k = (options.top_k * 3).max(options.top_k + 20);
+    let search_k = overretrieve_k.min(store.len());
+
+    log::info!("Searching for top-{} similar chunks (over-retrieving {})", options.top_k, search_k);
 
     let raw_results = store
-        .search(&query_vector, options.top_k, options.min_score)
+        .search(&query_vector, search_k, options.min_score)
         .map_err(|e: chatvcode_vdb::VdbError| {
             ChatVCodeError::internal(format!("Vector store search failed: {e}"))
                 .with_context(ErrorContext::default().with_operation("search"))
@@ -733,11 +738,49 @@ pub fn search_with_service(
             .collect()
     };
 
+    // Keyword-based re-ranking: boost chunks whose source text or symbol name
+    // contains exact terms from the query.
+    let keywords = chat::extract_keywords(query);
+    if !keywords.is_empty() {
+        let sem_scores: Vec<f32> = results.iter().map(|r| r.score).collect();
+        let sem_min = sem_scores.iter().cloned().fold(f32::INFINITY, f32::min);
+        let sem_max = sem_scores.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+        let sem_range = sem_max - sem_min;
+        let scores_uniform = sem_range < 0.1;
+
+        for result in &mut results {
+            let kw_score = chat::keyword_score(
+                &keywords,
+                &result.chunk.source_text,
+                result.chunk.symbol_name.as_deref(),
+            );
+
+            let norm_semantic = if sem_range > 1e-6 {
+                (result.score - sem_min) / sem_range
+            } else {
+                0.5
+            };
+
+            let keyword_weight = if scores_uniform { 0.6 } else { 0.3 };
+            let semantic_weight = 1.0 - keyword_weight;
+            result.score = semantic_weight * norm_semantic + keyword_weight * kw_score;
+        }
+
+        log::info!(
+            "Keyword re-ranking applied with {} keywords: {:?}",
+            keywords.len(),
+            keywords
+        );
+    }
+
     results.sort_by(|a, b| {
         b.score
             .partial_cmp(&a.score)
             .unwrap_or(std::cmp::Ordering::Equal)
     });
+
+    // Truncate to top_k after re-ranking
+    results.truncate(options.top_k);
 
     log::info!("Returning {} search results", results.len());
 

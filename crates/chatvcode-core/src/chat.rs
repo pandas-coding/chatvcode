@@ -713,9 +713,10 @@ pub fn chat_with_context_stream(
 /// Internal helper that handles:
 /// 1. Loading the vector store
 /// 2. Embedding the query
-/// 3. Searching for similar chunks
+/// 3. Searching for similar chunks (over-retrieving for re-ranking)
 /// 4. Loading metadata to resolve chunk IDs
-/// 5. Formatting context snippets
+/// 5. Keyword-based re-ranking to boost exact-match results
+/// 6. Formatting context snippets
 ///
 /// Returns `(snippets, source_refs, retrieved_count, used_count)`.
 fn retrieve_context(
@@ -763,9 +764,15 @@ fn retrieve_context(
             .with_context(ErrorContext::default().with_operation("retrieve_context"))
     })?;
 
+    // Over-retrieve: fetch more candidates than needed so keyword re-ranking
+    // can promote exact-match chunks (e.g., struct definitions) that the
+    // embedding model may have scored only slightly lower.
+    let overretrieve_k = (options.top_k * 3).max(options.top_k + 20);
+    let search_k = overretrieve_k.min(store.len());
+
     // Search the vector store
     let raw_results = store
-        .search(&query_vector, options.top_k, options.min_score)
+        .search(&query_vector, search_k, options.min_score)
         .map_err(|e| {
             ChatVCodeError::internal(format!("Vector store search failed: {e}"))
                 .with_context(ErrorContext::default().with_operation("retrieve_context"))
@@ -777,14 +784,14 @@ fn retrieve_context(
         return Ok((Vec::new(), Vec::new(), 0, 0));
     }
 
-    log::info!("Found {} candidate results", raw_results.len());
+    log::info!("Found {} candidate results (over-retrieved from {})", raw_results.len(), search_k);
 
     // Diagnostic: warn if retrieval scores are suspiciously uniform,
     // which indicates the embedding model produces poor discrimination.
     // This commonly happens with generative (causal) language models used as
     // embedding models — all code chunks cluster together, yielding near-identical
     // cosine similarity to any query.
-    if raw_results.len() >= 2 {
+    let scores_uniform = if raw_results.len() >= 2 {
         let scores: Vec<f32> = raw_results.iter().map(|(_, s)| *s).collect();
         let max_score = scores.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
         let min_score = scores.iter().cloned().fold(f32::INFINITY, f32::min);
@@ -793,15 +800,20 @@ fn retrieve_context(
         log::info!(
             "Retrieval score stats: min={min_score:.4}, max={max_score:.4}, avg={avg_score:.4}, range={score_range:.4}"
         );
-        if score_range < 0.05 {
+        let uniform = score_range < 0.1;
+        if uniform {
             log::warn!(
                 "Embedding scores are nearly identical (range={score_range:.4}). \
                  This indicates the embedding model has poor discrimination. \
+                 Keyword re-ranking will be applied to improve result quality. \
                  Consider using a dedicated embedding model (e.g., bge-m3, nomic-embed-text) \
                  instead of a generative language model for better retrieval quality."
             );
         }
-    }
+        uniform
+    } else {
+        false
+    };
 
     // Load metadata store
     let metadata_store = load_metadata_store(&metadata_store_path)?;
@@ -823,8 +835,54 @@ fn retrieve_context(
 
     let retrieved_count = results_with_meta.len();
 
-    // Sort by score descending
+    // Keyword-based re-ranking: boost chunks whose source text or symbol name
+    // contains exact terms from the query. This is critical when the embedding
+    // model has poor discrimination (uniform scores), as it ensures chunks with
+    // exact keyword matches (e.g., a struct definition when querying "struct Foo")
+    // are promoted to the top of the results.
+    let keywords = extract_keywords(question);
+    if !keywords.is_empty() {
+        // Compute the semantic score range for normalization
+        let sem_scores: Vec<f32> = results_with_meta.iter().map(|(_, s)| *s).collect();
+        let sem_min = sem_scores.iter().cloned().fold(f32::INFINITY, f32::min);
+        let sem_max = sem_scores.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+        let sem_range = sem_max - sem_min;
+
+        for (meta, semantic_score) in &mut results_with_meta {
+            let kw_score = keyword_score(
+                &keywords,
+                &meta.source_text,
+                meta.symbol_name.as_deref(),
+            );
+
+            // Normalize semantic score to [0, 1]
+            let norm_semantic = if sem_range > 1e-6 {
+                (*semantic_score - sem_min) / sem_range
+            } else {
+                0.5
+            };
+
+            // Blend: when scores are uniform, rely more on keywords;
+            // otherwise keep a strong semantic signal.
+            let keyword_weight = if scores_uniform { 0.6 } else { 0.3 };
+            let semantic_weight = 1.0 - keyword_weight;
+            let combined = semantic_weight * norm_semantic + keyword_weight * kw_score;
+
+            *semantic_score = combined;
+        }
+
+        log::info!(
+            "Keyword re-ranking applied with {} keywords: {:?}",
+            keywords.len(),
+            keywords
+        );
+    }
+
+    // Sort by re-ranked score descending
     results_with_meta.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+
+    // Truncate to top_k after re-ranking
+    results_with_meta.truncate(options.top_k);
 
     // Build source references (with full snippet text, before budget trimming)
     let source_refs: Vec<SourceReference> = results_with_meta
@@ -843,6 +901,75 @@ fn retrieve_context(
     let trimmed_refs: Vec<SourceReference> = source_refs.into_iter().take(used_count).collect();
 
     Ok((trimmed_snippets, trimmed_refs, retrieved_count, used_count))
+}
+
+/// Extract significant keywords from a query for re-ranking.
+///
+/// Filters out common stop words and very short tokens that would
+/// produce noisy matches across many code chunks.
+pub(crate) fn extract_keywords(query: &str) -> Vec<String> {
+    let stop_words = [
+        "what", "how", "where", "when", "why", "who", "which", "the", "a", "an",
+        "is", "are", "was", "were", "be", "been", "being", "do", "does", "did",
+        "of", "in", "on", "at", "to", "for", "with", "by", "from", "as", "into",
+        "and", "or", "but", "not", "no", "if", "then", "else", "can", "could",
+        "would", "should", "will", "shall", "may", "might", "must",
+        "this", "that", "these", "those", "it", "its", "i", "me", "my",
+        "we", "our", "you", "your", "he", "she", "they", "them", "their",
+        "all", "any", "each", "every", "some", "more", "most", "other",
+        "about", "up", "out", "so", "than", "too", "very", "just",
+        "there", "here", "have", "has", "had", "having", "get", "got",
+        "also", "use", "used", "using", "define", "defined", "implement",
+        "implemented", "find", "show", "list", "tell", "explain", "describe",
+        "members", "fields", "methods", "functions", "struct", "enum",
+        "class", "trait", "interface", "type", "function", "method",
+    ];
+
+    let mut keywords = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+
+    for word in query.split(|c: char| !c.is_alphanumeric() && c != '_') {
+        let lower = word.to_lowercase();
+        if lower.len() >= 3 && !stop_words.contains(&lower.as_str()) && seen.insert(lower.clone()) {
+            keywords.push(lower);
+        }
+    }
+
+    keywords
+}
+
+/// Compute a keyword relevance score for a code chunk.
+///
+/// Returns a value in `[0.0, 1.0]` based on how many query keywords
+/// appear in the chunk's source text and symbol name. Symbol name
+/// matches are weighted higher since they indicate the chunk defines
+/// the queried entity.
+pub(crate) fn keyword_score(keywords: &[String], source_text: &str, symbol_name: Option<&str>) -> f32 {
+    if keywords.is_empty() {
+        return 0.0;
+    }
+
+    let source_lower = source_text.to_lowercase();
+    let symbol_lower = symbol_name.map(|s| s.to_lowercase());
+
+    let mut text_matches = 0usize;
+    let mut symbol_match = false;
+
+    for kw in keywords {
+        if source_lower.contains(kw.as_str()) {
+            text_matches += 1;
+        }
+        if let Some(ref sym) = symbol_lower {
+            if sym.contains(kw.as_str()) {
+                symbol_match = true;
+            }
+        }
+    }
+
+    let text_score = text_matches as f32 / keywords.len() as f32;
+    let symbol_boost = if symbol_match { 0.3 } else { 0.0 };
+
+    (text_score + symbol_boost).min(1.0)
 }
 
 /// Loads or creates a chunk metadata store.

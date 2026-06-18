@@ -9,8 +9,9 @@ use chatvcode_core::{
     index_path_with_options, search, search_with_service,
 };
 use chatvcode_llm::{
-    ChatPromptBuilder, ChatSession, ChatTemplate, GenerationParams, LlamaEmbeddingService,
-    LlamaModel, LlmService, MockLlmService, StreamEvent,
+    ChatPromptBuilder, ChatSession, ChatTemplate, ChatvcodeConfig, GenerationParams,
+    LlamaEmbeddingService, LlamaModel, LlamaService, LlmConfig, LlmService, MockLlmService,
+    StreamEvent, list_models, estimate_memory, recommend_gpu_layers, format_bytes,
 };
 use chatvcode_parser::parse_source;
 use chatvcode_vdb::{EmbeddingConfig, EmbeddingService};
@@ -268,6 +269,70 @@ pub enum Commands {
         /// Enable verbose llama.cpp/ggml log output (tensor creation, backend registration, etc.).
         #[arg(long, default_value_t = false, num_args = 0..=1, help = "Enable verbose llama.cpp/ggml logging (default: false)")]
         llm_verbose_log: bool,
+        /// Path to a configuration file (JSON). Overrides: CLI > config file > defaults.
+        #[arg(long, help = "Path to configuration file (~/.chatvcode/config.json)")]
+        config: Option<String>,
+    },
+    /// Manage models: list, inspect, estimate memory, and configure GPU offloading.
+    ///
+    /// Examples:
+    ///   chatvcode model list                # List all discovered models
+    ///   chatvcode model info <path>         # Show model metadata
+    ///   chatvcode model memory <path>       # Estimate memory usage
+    ///   chatvcode model gpu <path>          # Recommend GPU layer count
+    ///   chatvcode model config show         # Show current configuration
+    ///   chatvcode model config init         # Create default config file
+    Model {
+        #[command(subcommand)]
+        action: ModelAction,
+    },
+}
+
+/// Model management subcommands.
+#[derive(Subcommand)]
+pub enum ModelAction {
+    /// List all discovered GGUF models in search directories.
+    List,
+    /// Show detailed metadata for a specific model.
+    Info {
+        /// Path to the GGUF model file.
+        path: String,
+    },
+    /// Estimate memory usage for a model at a given context size.
+    Memory {
+        /// Path to the GGUF model file.
+        path: String,
+        /// Context window size (default: 8192).
+        #[arg(long, default_value = "8192", help = "Context window size")]
+        n_ctx: u32,
+    },
+    /// Recommend GPU layer offloading based on model size and VRAM.
+    Gpu {
+        /// Path to the GGUF model file.
+        path: String,
+        /// Available VRAM in GB (optional, uses heuristic if not specified).
+        #[arg(long, help = "Available VRAM in GB")]
+        vram_gb: Option<u64>,
+    },
+    /// Manage configuration file.
+    Config {
+        #[command(subcommand)]
+        action: ConfigAction,
+    },
+}
+
+/// Configuration file management subcommands.
+#[derive(Subcommand)]
+pub enum ConfigAction {
+    /// Show current configuration (merged from file + defaults).
+    Show,
+    /// Initialize a default configuration file.
+    Init,
+    /// Validate a configuration file.
+    Validate {
+        /// Path to config file (default: ~/.chatvcode/config.json).
+        #[arg(long, help = "Path to config file")]
+        path: Option<String>,
     },
 }
 
@@ -458,6 +523,7 @@ pub fn execute(cli: Cli) -> Result<(), ChatVCodeError> {
             retrieval,
             interactive,
             llm_verbose_log,
+            config,
         } => {
             run_chat(ChatArgs {
                 question,
@@ -486,7 +552,181 @@ pub fn execute(cli: Cli) -> Result<(), ChatVCodeError> {
                 retrieval,
                 interactive,
                 llm_verbose_log,
+                config,
             })?;
+        }
+        Commands::Model { action } => {
+            handle_model_command(action)?;
+        }
+    }
+    Ok(())
+}
+
+/// Handle model management commands.
+fn handle_model_command(action: ModelAction) -> Result<(), ChatVCodeError> {
+    match action {
+        ModelAction::List => {
+            let models = list_models();
+            if models.is_empty() {
+                eprintln!("No GGUF models found in search directories.");
+                eprintln!("Search paths:");
+                for (dir, source) in chatvcode_llm::model_search_dirs() {
+                    eprintln!("  {} ({})", dir.display(), source);
+                }
+                return Ok(());
+            }
+
+            println!("Discovered {} model(s):\n", models.len());
+            for (i, model) in models.iter().enumerate() {
+                println!("[{}] {}", i + 1, model.summary_line());
+                println!("    Path: {}", model.path.display());
+                println!();
+            }
+        }
+        ModelAction::Info { path } => {
+            let model_path = PathBuf::from(&path);
+            if !model_path.exists() {
+                return Err(ChatVCodeError::invalid_input(format!(
+                    "Model file not found: {}",
+                    model_path.display()
+                )));
+            }
+
+            let meta = chatvcode_llm::pre_validate_model(&model_path).map_err(|e| {
+                ChatVCodeError::internal(format!("Failed to read model metadata: {e}"))
+            })?;
+
+            println!("{}", chatvcode_llm::format_gguf_summary(&model_path, &meta));
+        }
+        ModelAction::Memory { path, n_ctx } => {
+            let model_path = PathBuf::from(&path);
+            if !model_path.exists() {
+                return Err(ChatVCodeError::invalid_input(format!(
+                    "Model file not found: {}",
+                    model_path.display()
+                )));
+            }
+
+            let estimate = estimate_memory(&model_path, n_ctx).map_err(|e| {
+                ChatVCodeError::internal(format!("Failed to estimate memory: {e}"))
+            })?;
+
+            println!("Memory Estimation for {}", model_path.display());
+            println!("Context size: {n_ctx} tokens\n");
+            println!("{}", estimate.summary());
+        }
+        ModelAction::Gpu { path, vram_gb } => {
+            let model_path = PathBuf::from(&path);
+            if !model_path.exists() {
+                return Err(ChatVCodeError::invalid_input(format!(
+                    "Model file not found: {}",
+                    model_path.display()
+                )));
+            }
+
+            let vram_bytes = vram_gb.map(|gb| gb * 1024 * 1024 * 1024);
+            let recommendation = recommend_gpu_layers(&model_path, vram_bytes).map_err(|e| {
+                ChatVCodeError::internal(format!("Failed to recommend GPU layers: {e}"))
+            })?;
+
+            println!("GPU Layer Recommendation for {}", model_path.display());
+            if let Some(gb) = vram_gb {
+                println!("Available VRAM: {gb} GB");
+            } else {
+                println!("Available VRAM: (using heuristic estimate)");
+            }
+            println!();
+            println!("{}", recommendation.summary());
+        }
+        ModelAction::Config { action } => {
+            handle_config_command(action)?;
+        }
+    }
+    Ok(())
+}
+
+/// Handle configuration file management commands.
+fn handle_config_command(action: ConfigAction) -> Result<(), ChatVCodeError> {
+    match action {
+        ConfigAction::Show => {
+            let config = ChatvcodeConfig::load_default().unwrap_or_else(|e| {
+                eprintln!("Warning: Could not load config file: {e}");
+                eprintln!("Using default configuration.");
+                ChatvcodeConfig::default()
+            });
+
+            let json = serde_json::to_string_pretty(&config).map_err(|e| {
+                ChatVCodeError::internal(format!("Failed to serialize config: {e}"))
+            })?;
+
+            // Show which config files exist and their priority
+            let local_path = chatvcode_llm::local_config_path();
+            let global_path = chatvcode_llm::default_config_path();
+            
+            println!("Configuration file search paths (priority: high → low):");
+            println!("  1. Local:  {} {}", 
+                local_path.display(),
+                if local_path.exists() { "✓ exists" } else { "✗ not found" }
+            );
+            println!("  2. Global: {} {}", 
+                global_path.display(),
+                if global_path.exists() { "✓ exists" } else { "✗ not found" }
+            );
+            println!("  3. Built-in defaults");
+            println!();
+            
+            if local_path.exists() && global_path.exists() {
+                println!("Merged configuration (local overrides global):");
+            } else if local_path.exists() {
+                println!("Configuration (from local file):");
+            } else if global_path.exists() {
+                println!("Configuration (from global file):");
+            } else {
+                println!("Configuration (built-in defaults):");
+            }
+            println!("{json}");
+            
+            println!();
+            println!("Priority: CLI arguments > local config > global config > built-in defaults");
+        }
+        ConfigAction::Init => {
+            let config_path = chatvcode_llm::default_config_path();
+            if config_path.exists() {
+                eprintln!("Configuration file already exists: {}", config_path.display());
+                eprintln!("Use 'chatvcode model config show' to view current configuration.");
+                return Ok(());
+            }
+
+            let config = ChatvcodeConfig::default();
+            config.save_to(&config_path).map_err(|e| {
+                ChatVCodeError::internal(format!("Failed to save config: {e}"))
+            })?;
+
+            println!("Created default configuration file: {}", config_path.display());
+            println!("Edit this file to customize default settings.");
+        }
+        ConfigAction::Validate { path } => {
+            let config_path = path
+                .map(PathBuf::from)
+                .unwrap_or_else(chatvcode_llm::default_config_path);
+
+            if !config_path.exists() {
+                return Err(ChatVCodeError::invalid_input(format!(
+                    "Config file not found: {}",
+                    config_path.display()
+                )));
+            }
+
+            match ChatvcodeConfig::load_from(&config_path) {
+                Ok(_) => {
+                    println!("✓ Configuration file is valid: {}", config_path.display());
+                }
+                Err(e) => {
+                    return Err(ChatVCodeError::invalid_input(format!(
+                        "Configuration file validation failed: {e}"
+                    )));
+                }
+            }
         }
     }
     Ok(())
@@ -520,6 +760,7 @@ struct ChatArgs {
     retrieval: bool,
     interactive: bool,
     llm_verbose_log: bool,
+    config: Option<String>,
 }
 
 /// Run the chat command.
@@ -543,6 +784,63 @@ fn run_chat(args: ChatArgs) -> Result<(), ChatVCodeError> {
         )));
     }
 
+    // --- Load configuration file (priority: CLI > local > global > default) ---
+    let file_config = if let Some(ref config_path) = args.config {
+        let path = PathBuf::from(config_path);
+        if !path.exists() {
+            return Err(ChatVCodeError::invalid_input(format!(
+                "Config file not found: {}",
+                path.display()
+            )));
+        }
+        eprintln!("📝 Loading configuration from {}", path.display());
+        ChatvcodeConfig::load_from(&path).map_err(|e| {
+            ChatVCodeError::internal(format!("Failed to load config file: {e}"))
+        })?
+    } else {
+        // Try local and global config paths with priority: local > global > default
+        let local_path = chatvcode_llm::local_config_path();
+        let global_path = chatvcode_llm::default_config_path();
+        
+        let local_exists = local_path.exists();
+        let global_exists = global_path.exists();
+        
+        if local_exists && global_exists {
+            eprintln!(
+                "📝 Loading configuration: local ({}) > global ({})",
+                local_path.display(),
+                global_path.display()
+            );
+        } else if local_exists {
+            eprintln!("📝 Loading local configuration from {}", local_path.display());
+        } else if global_exists {
+            eprintln!("📝 Loading global configuration from {}", global_path.display());
+        }
+        
+        ChatvcodeConfig::load_default().unwrap_or_default()
+    };
+
+    // --- Apply config overrides (CLI > config > built-in default) ---
+    // For fields where the CLI always provides a default (e.g., temperature=0.7),
+    // we treat the clap default as "not set by user" and use the config value
+    // only when the CLI value matches the clap default. This is a heuristic,
+    // but it provides a reasonable experience for the most common settings.
+    let resolved_model = args
+        .model
+        .clone()
+        .or_else(|| file_config.model.path.clone());
+    let _resolved_system_prompt = args
+        .system_prompt
+        .clone()
+        .or_else(|| file_config.chat.system_prompt.clone());
+    let resolved_n_gpu_layers = file_config.resolve_n_gpu_layers(Some(args.n_gpu_layers));
+    let resolved_n_ctx = file_config.resolve_n_ctx(Some(args.n_ctx));
+    let resolved_n_threads = args
+        .n_threads
+        .or(file_config.model.n_threads);
+    let resolved_verbose_log = args.llm_verbose_log
+        || file_config.model.verbose_log.unwrap_or(false);
+
     // --- Parse chat template ---
     let chat_template = parse_chat_template(&args.template)?;
 
@@ -555,43 +853,80 @@ fn run_chat(args: ChatArgs) -> Result<(), ChatVCodeError> {
 
     // --- Set up LLM service ---
     let mock_response_text = args.mock_llm_response.clone();
-    let llm: Box<dyn LlmService> = if args.mock_llm {
+    let mut llm: Box<dyn LlmService> = if args.mock_llm {
         let response_text = mock_response_text.unwrap_or_else(|| {
             "This is a mock response. The LLM-generated answer would appear here when using a real model.".to_string()
         });
         Box::new(MockLlmService::new(response_text))
     } else {
-        let model_path = match &args.model {
+        let model_path = match &resolved_model {
             Some(p) => PathBuf::from(p),
             None => {
-                eprintln!("🔍 Auto-discovering model from ~/.chatvcode/models/...");
-                match chatvcode_llm::auto_discover_model() {
-                    Ok(p) => {
-                        eprintln!("✓ Found model: {}", p.display());
-                        p
+                eprintln!("🔍 Auto-discovering model from search directories...");
+                let discovered = list_models();
+                if discovered.len() == 1 {
+                    let p = discovered[0].path.clone();
+                    eprintln!("✓ Found model: {} ({})", p.display(), discovered[0].source);
+                    p
+                } else if discovered.is_empty() {
+                    match chatvcode_llm::auto_discover_model() {
+                        Ok(p) => {
+                            eprintln!("✓ Found model: {}", p.display());
+                            p
+                        }
+                        Err(e) => {
+                            eprintln!("✗ Could not auto-discover a model.");
+                            eprintln!("  {e}");
+                            eprintln!();
+                            eprintln!("  Please specify a model with --model=<path>.");
+                            return Err(ChatVCodeError::internal(format!(
+                                "Model auto-discovery failed: {e}"
+                            ))
+                            .with_severity(ErrorSeverity::Unrecoverable));
+                        }
                     }
-                    Err(e) => {
-                        eprintln!("✗ Could not auto-discover a model.");
-                        eprintln!("  {e}");
-                        eprintln!();
-                        eprintln!("  Please specify a model with --model=<path>.");
-                        return Err(ChatVCodeError::internal(format!(
-                            "Model auto-discovery failed: {e}"
-                        ))
-                        .with_severity(ErrorSeverity::Unrecoverable));
+                } else {
+                    eprintln!("Multiple models found:");
+                    for (i, m) in discovered.iter().enumerate() {
+                        eprintln!("  [{}] {} ({})", i + 1, m.name, m.source);
                     }
+                    eprintln!("Please specify a model with --model=<path>.");
+                    // Use first discovered model as fallback
+                    discovered[0].path.clone()
                 }
             }
         };
 
         eprintln!("⏳ Loading model: {}...", model_path.display());
 
-        let n_threads = args.n_threads.unwrap_or_else(|| num_cpus::get() as i32);
-        let config = chatvcode_llm::LlmConfig::new(&model_path)
-            .with_n_ctx(args.n_ctx)
+        // Show memory estimate before loading
+        match estimate_memory(&model_path, resolved_n_ctx) {
+            Ok(estimate) => {
+                eprintln!(
+                    "  Memory estimate: {} (model: {}, KV cache: {}, overhead: {})",
+                    format_bytes(estimate.total_bytes),
+                    format_bytes(estimate.model_bytes),
+                    format_bytes(estimate.kv_cache_bytes),
+                    format_bytes(estimate.overhead_bytes),
+                );
+                if !estimate.fits_in_ram {
+                    for w in &estimate.warnings {
+                        eprintln!("  ⚠ {w}");
+                    }
+                    eprintln!("  Hint: reduce --n-ctx or use a smaller model to avoid OOM.");
+                }
+            }
+            Err(e) => {
+                log::warn!("Could not estimate memory usage: {e}");
+            }
+        }
+
+        let n_threads = resolved_n_threads.unwrap_or_else(|| num_cpus::get() as i32);
+        let config = LlmConfig::new(&model_path)
+            .with_n_ctx(resolved_n_ctx)
             .with_n_threads(n_threads)
-            .with_n_gpu_layers(args.n_gpu_layers)
-            .with_verbose_log(args.llm_verbose_log);
+            .with_n_gpu_layers(resolved_n_gpu_layers)
+            .with_verbose_log(resolved_verbose_log);
 
         match chatvcode_llm::LlamaService::new(&config) {
             Ok(service) => {
@@ -603,6 +938,7 @@ fn run_chat(args: ChatArgs) -> Result<(), ChatVCodeError> {
                         "  Parameters:    {}",
                         chatvcode_llm::format_param_count(info.n_params)
                     );
+                    eprintln!("  GPU layers:    {}", resolved_n_gpu_layers);
                 }
                 Box::new(service) as Box<dyn LlmService>
             }
@@ -611,7 +947,7 @@ fn run_chat(args: ChatArgs) -> Result<(), ChatVCodeError> {
                 eprintln!();
                 eprintln!("  Suggestions:");
                 eprintln!("    - Ensure the model file is a valid GGUF format");
-                eprintln!("    - Try reducing --n-ctx (current: {})", args.n_ctx);
+                eprintln!("    - Try reducing --n-ctx (current: {})", resolved_n_ctx);
                 eprintln!("    - Try --n-gpu-layers=0 for CPU-only mode");
                 eprintln!("    - Ensure you have enough RAM/VRAM for the model");
                 return Err(ChatVCodeError::internal(format!("Failed to load model: {e}"))
@@ -624,7 +960,7 @@ fn run_chat(args: ChatArgs) -> Result<(), ChatVCodeError> {
     if args.interactive {
         return run_interactive_chat(
             &args,
-            &*llm,
+            &mut llm,
             &chat_template,
             &generation_params,
         );
@@ -912,12 +1248,17 @@ fn index_with_gguf(
 /// - `/save [path]` — Save session to JSON file
 /// - `/load [path]` — Restore session from JSON file
 /// - `/history` — Show conversation history summary
+/// - `/model list` — List available models
+/// - `/model info [path]` — Show model metadata
+/// - `/model switch <path>` — Switch to a different model
+/// - `/model memory [path]` — Estimate memory usage
+/// - `/model gpu [path]` — Recommend GPU layers
 ///
 /// When `--retrieval=false` (LLM-only mode), queries go directly to the LLM.
 /// When retrieval is enabled, each turn performs a fresh semantic search.
 fn run_interactive_chat(
     args: &ChatArgs,
-    llm: &dyn LlmService,
+    llm: &mut Box<dyn LlmService>,
     chat_template: &ChatTemplate,
     generation_params: &GenerationParams,
 ) -> Result<(), ChatVCodeError> {
@@ -994,6 +1335,7 @@ fn run_interactive_chat(
                         &mut last_question,
                         chat_template,
                         &default_session_path,
+                        args,
                     );
                     match cmd_result {
                         InteractiveAction::Continue => continue,
@@ -1002,7 +1344,7 @@ fn run_interactive_chat(
                             // /retry — fall through to inference with q
                             run_interactive_turn(
                                 &q,
-                                llm,
+                                &**llm,
                                 &embedding_service,
                                 args,
                                 generation_params,
@@ -1011,12 +1353,25 @@ fn run_interactive_chat(
                                 &mut last_question,
                             );
                         }
+                        InteractiveAction::SwitchModel(new_path) => {
+                            match switch_model(&new_path, args) {
+                                Ok(new_llm) => {
+                                    *llm = new_llm;
+                                    eprintln!("✓ Model switched successfully.");
+                                    session.clear();
+                                    eprintln!("  Conversation history cleared.");
+                                }
+                                Err(e) => {
+                                    eprintln!("✗ Failed to switch model: {e}");
+                                }
+                            }
+                        }
                     }
                 } else {
                     last_question = Some(input.clone());
                     run_interactive_turn(
                         &input,
-                        llm,
+                        &**llm,
                         &embedding_service,
                         args,
                         generation_params,
@@ -1053,6 +1408,7 @@ enum InteractiveAction {
     Continue,
     Quit,
     ProcessQuestion(String),
+    SwitchModel(String),
 }
 
 /// Resolve the history file path (~/.chatvcode/history).
@@ -1075,6 +1431,7 @@ fn handle_interactive_command(
     last_question: &mut Option<String>,
     chat_template: &ChatTemplate,
     default_session_path: &PathBuf,
+    args: &ChatArgs,
 ) -> InteractiveAction {
     let parts: Vec<&str> = input.splitn(2, ' ').collect();
     let cmd = parts[0];
@@ -1163,11 +1520,184 @@ fn handle_interactive_command(
             display_interactive_history(session);
             InteractiveAction::Continue
         }
+        "/model" => {
+            let subcmd = arg.unwrap_or("list");
+            let subcmd_parts: Vec<&str> = subcmd.splitn(2, ' ').collect();
+            let action = subcmd_parts[0];
+            let action_arg = subcmd_parts.get(1).map(|s| s.trim()).filter(|s| !s.is_empty());
+
+            match action {
+                "list" | "ls" => {
+                    let models = list_models();
+                    if models.is_empty() {
+                        eprintln!("No GGUF models found in search directories.");
+                        eprintln!("Search paths:");
+                        for (dir, source) in chatvcode_llm::model_search_dirs() {
+                            eprintln!("  {} ({})", dir.display(), source);
+                        }
+                    } else {
+                        eprintln!("Discovered {} model(s):\n", models.len());
+                        for (i, model) in models.iter().enumerate() {
+                            eprintln!("[{}] {}", i + 1, model.summary_line());
+                            eprintln!("    Path: {}", model.path.display());
+                            eprintln!();
+                        }
+                        eprintln!("Use `/model switch <path>` to switch models.");
+                    }
+                    InteractiveAction::Continue
+                }
+                "info" => {
+                    if let Some(path_str) = action_arg {
+                        let model_path = PathBuf::from(path_str);
+                        if !model_path.exists() {
+                            eprintln!("✗ Model file not found: {}", model_path.display());
+                        } else {
+                            match chatvcode_llm::pre_validate_model(&model_path) {
+                                Ok(meta) => {
+                                    println!("{}", chatvcode_llm::format_gguf_summary(&model_path, &meta));
+                                }
+                                Err(e) => {
+                                    eprintln!("✗ Failed to read model metadata: {e}");
+                                }
+                            }
+                        }
+                    } else {
+                        eprintln!("Usage: /model info <path>");
+                    }
+                    InteractiveAction::Continue
+                }
+                "switch" => {
+                    if let Some(path_str) = action_arg {
+                        let model_path = PathBuf::from(path_str);
+                        if !model_path.exists() {
+                            eprintln!("✗ Model file not found: {}", model_path.display());
+                            InteractiveAction::Continue
+                        } else {
+                            eprintln!("⚙ Switching to model: {}", model_path.display());
+                            InteractiveAction::SwitchModel(path_str.to_string())
+                        }
+                    } else {
+                        eprintln!("Usage: /model switch <path>");
+                        eprintln!("Use `/model list` to see available models.");
+                        InteractiveAction::Continue
+                    }
+                }
+                "memory" => {
+                    if let Some(path_str) = action_arg {
+                        let model_path = PathBuf::from(path_str);
+                        if !model_path.exists() {
+                            eprintln!("✗ Model file not found: {}", model_path.display());
+                        } else {
+                            let n_ctx = args.n_ctx;
+                            match estimate_memory(&model_path, n_ctx) {
+                                Ok(estimate) => {
+                                    eprintln!("Memory Estimation for {}", model_path.display());
+                                    eprintln!("Context size: {n_ctx} tokens\n");
+                                    eprintln!("{}", estimate.summary());
+                                }
+                                Err(e) => {
+                                    eprintln!("✗ Failed to estimate memory: {e}");
+                                }
+                            }
+                        }
+                    } else {
+                        eprintln!("Usage: /model memory <path>");
+                    }
+                    InteractiveAction::Continue
+                }
+                "gpu" => {
+                    if let Some(path_str) = action_arg {
+                        let model_path = PathBuf::from(path_str);
+                        if !model_path.exists() {
+                            eprintln!("✗ Model file not found: {}", model_path.display());
+                        } else {
+                            match recommend_gpu_layers(&model_path, None) {
+                                Ok(rec) => {
+                                    eprintln!("GPU Layer Recommendation for {}", model_path.display());
+                                    eprintln!("{}", rec.summary());
+                                }
+                                Err(e) => {
+                                    eprintln!("✗ Failed to recommend GPU layers: {e}");
+                                }
+                            }
+                        }
+                    } else {
+                        eprintln!("Usage: /model gpu <path>");
+                    }
+                    InteractiveAction::Continue
+                }
+                _ => {
+                    eprintln!("Unknown model command: {action}");
+                    eprintln!("Available: list, info, switch, memory, gpu");
+                    InteractiveAction::Continue
+                }
+            }
+        }
         _ => {
             eprintln!("Unknown command: {cmd}. Type /help for commands.");
             InteractiveAction::Continue
         }
     }
+}
+
+/// Switch the LLM model at runtime in interactive mode.
+///
+/// Creates a new [`LlamaService`] from the given model path using the
+/// current CLI configuration (n_ctx, n_threads, n_gpu_layers, etc.).
+fn switch_model(
+    model_path: &str,
+    args: &ChatArgs,
+) -> Result<Box<dyn LlmService>, ChatVCodeError> {
+    let path = PathBuf::from(model_path);
+
+    if !path.exists() {
+        return Err(ChatVCodeError::invalid_input(format!(
+            "Model file not found: {}",
+            path.display()
+        )));
+    }
+
+    // Show memory estimate before loading
+    match estimate_memory(&path, args.n_ctx) {
+        Ok(estimate) => {
+            eprintln!(
+                "  Memory estimate: {}",
+                format_bytes(estimate.total_bytes)
+            );
+            if !estimate.fits_in_ram {
+                for w in &estimate.warnings {
+                    eprintln!("  ⚠ {w}");
+                }
+            }
+        }
+        Err(e) => {
+            log::warn!("Could not estimate memory usage: {e}");
+        }
+    }
+
+    let n_threads = args.n_threads.unwrap_or_else(|| num_cpus::get() as i32);
+    let config = LlmConfig::new(&path)
+        .with_n_ctx(args.n_ctx)
+        .with_n_threads(n_threads)
+        .with_n_gpu_layers(args.n_gpu_layers)
+        .with_verbose_log(args.llm_verbose_log);
+
+    let service = LlamaService::new(&config).map_err(|e| {
+        ChatVCodeError::internal(format!("Failed to load model '{}': {e}", path.display()))
+            .with_severity(ErrorSeverity::Unrecoverable)
+    })?;
+
+    if let Ok(info) = service.model_info() {
+        eprintln!("  Architecture: {}", info.architecture);
+        eprintln!("  Context size:  {}", info.n_ctx_train);
+        eprintln!(
+            "  Parameters:    {}",
+            chatvcode_llm::format_param_count(info.n_params)
+        );
+        eprintln!("  GPU layers:    {}", args.n_gpu_layers);
+    }
+
+    Ok(Box::new(service) as Box<dyn LlmService>)
 }
 
 /// Run a single interactive turn (RAG or LLM-only).
@@ -1549,14 +2079,21 @@ fn display_interactive_history(session: &ChatSession) {
 fn print_interactive_help() {
     eprintln!();
     eprintln!("  Interactive Chat Commands:");
-    eprintln!("    /quit, /q       Exit interactive mode");
-    eprintln!("    /help, /h       Show this help");
-    eprintln!("    /clear          Clear conversation history");
-    eprintln!("    /sources, /src  Show sources from last response");
-    eprintln!("    /retry, /r      Resend the last question");
-    eprintln!("    /save [path]    Save session to JSON (default: ~/.chatvcode/session.json)");
-    eprintln!("    /load [path]    Load session from JSON (default: ~/.chatvcode/session.json)");
-    eprintln!("    /history        Show conversation history summary");
+    eprintln!("    /quit, /q           Exit interactive mode");
+    eprintln!("    /help, /h           Show this help");
+    eprintln!("    /clear              Clear conversation history");
+    eprintln!("    /sources, /src      Show sources from last response");
+    eprintln!("    /retry, /r          Resend the last question");
+    eprintln!("    /save [path]        Save session to JSON (default: ~/.chatvcode/session.json)");
+    eprintln!("    /load [path]        Load session from JSON (default: ~/.chatvcode/session.json)");
+    eprintln!("    /history            Show conversation history summary");
+    eprintln!();
+    eprintln!("  Model Management Commands:");
+    eprintln!("    /model list         List available models");
+    eprintln!("    /model info <path>  Show model metadata");
+    eprintln!("    /model switch <path> Switch to a different model");
+    eprintln!("    /model memory <path> Estimate memory usage");
+    eprintln!("    /model gpu <path>   Recommend GPU layers");
     eprintln!();
     eprintln!("  Or just type your question to ask the model.");
     eprintln!();
@@ -2529,12 +3066,45 @@ mod tests {
         assert!(formatted.contains("src/main.rs"));
     }
 
+    fn create_test_chat_args() -> ChatArgs {
+        ChatArgs {
+            question: String::new(),
+            path: ".".to_string(),
+            model: None,
+            temperature: 0.7,
+            max_tokens: 2048,
+            top_k: 40,
+            top_p: 0.9,
+            template: "auto".to_string(),
+            system_prompt: None,
+            stream: false,
+            json: false,
+            n_ctx: 8192,
+            n_threads: None,
+            n_gpu_layers: 0,
+            embedding_model: None,
+            embedding_tokenizer: None,
+            embedding_dimension: 0,
+            embedding_max_tokens: 512,
+            top_k_retrieval: 5,
+            min_score: None,
+            context_token_budget: 4096,
+            mock_llm: false,
+            mock_llm_response: None,
+            retrieval: false,
+            interactive: true,
+            llm_verbose_log: false,
+            config: None,
+        }
+    }
+
     #[test]
     fn test_interactive_command_quit() {
         let mut session = ChatSession::new(ChatTemplate::ChatML);
         let mut sources = Vec::new();
         let mut last_q = None;
         let default_path = PathBuf::from("/tmp/test_session.json");
+        let args = create_test_chat_args();
         let result = handle_interactive_command(
             "/quit",
             &mut session,
@@ -2542,6 +3112,7 @@ mod tests {
             &mut last_q,
             &ChatTemplate::ChatML,
             &default_path,
+            &args,
         );
         assert!(matches!(result, InteractiveAction::Quit));
     }
@@ -2556,6 +3127,7 @@ mod tests {
         let mut sources = Vec::new();
         let mut last_q = Some("hello".to_string());
         let default_path = PathBuf::from("/tmp/test_session.json");
+        let args = create_test_chat_args();
         let result = handle_interactive_command(
             "/clear",
             &mut session,
@@ -2563,6 +3135,7 @@ mod tests {
             &mut last_q,
             &ChatTemplate::ChatML,
             &default_path,
+            &args,
         );
         assert!(matches!(result, InteractiveAction::Continue));
         assert_eq!(session.len(), 0);
@@ -2575,6 +3148,7 @@ mod tests {
         let mut sources = Vec::new();
         let mut last_q: Option<String> = None;
         let default_path = PathBuf::from("/tmp/test_session.json");
+        let args = create_test_chat_args();
         let result = handle_interactive_command(
             "/retry",
             &mut session,
@@ -2582,6 +3156,7 @@ mod tests {
             &mut last_q,
             &ChatTemplate::ChatML,
             &default_path,
+            &args,
         );
         assert!(matches!(result, InteractiveAction::Continue));
     }
@@ -2592,6 +3167,7 @@ mod tests {
         let mut sources = Vec::new();
         let mut last_q = Some("What is Rust?".to_string());
         let default_path = PathBuf::from("/tmp/test_session.json");
+        let args = create_test_chat_args();
         let result = handle_interactive_command(
             "/retry",
             &mut session,
@@ -2599,6 +3175,7 @@ mod tests {
             &mut last_q,
             &ChatTemplate::ChatML,
             &default_path,
+            &args,
         );
         match result {
             InteractiveAction::ProcessQuestion(q) => assert_eq!(q, "What is Rust?"),
@@ -2617,6 +3194,7 @@ mod tests {
 
         let mut sources = Vec::new();
         let mut last_q = None;
+        let args = create_test_chat_args();
 
         let result = handle_interactive_command(
             &format!("/save {}", session_path.display()),
@@ -2625,6 +3203,7 @@ mod tests {
             &mut last_q,
             &ChatTemplate::ChatML,
             &session_path,
+            &args,
         );
         assert!(matches!(result, InteractiveAction::Continue));
         assert!(session_path.exists());
@@ -2637,6 +3216,7 @@ mod tests {
             &mut last_q,
             &ChatTemplate::ChatML,
             &session_path,
+            &args,
         );
         assert!(matches!(result, InteractiveAction::Continue));
         assert_eq!(session2.len(), 2);
@@ -2649,6 +3229,7 @@ mod tests {
         let mut sources = Vec::new();
         let mut last_q = None;
         let default_path = PathBuf::from("/tmp/test_session.json");
+        let args = create_test_chat_args();
         let result = handle_interactive_command(
             "/help",
             &mut session,
@@ -2656,6 +3237,7 @@ mod tests {
             &mut last_q,
             &ChatTemplate::ChatML,
             &default_path,
+            &args,
         );
         assert!(matches!(result, InteractiveAction::Continue));
     }
@@ -2666,6 +3248,7 @@ mod tests {
         let mut sources = Vec::new();
         let mut last_q = None;
         let default_path = PathBuf::from("/tmp/test_session.json");
+        let args = create_test_chat_args();
         let result = handle_interactive_command(
             "/foobar",
             &mut session,
@@ -2673,6 +3256,7 @@ mod tests {
             &mut last_q,
             &ChatTemplate::ChatML,
             &default_path,
+            &args,
         );
         assert!(matches!(result, InteractiveAction::Continue));
     }

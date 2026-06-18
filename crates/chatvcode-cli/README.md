@@ -140,6 +140,11 @@ chatvcode chat "hello" --retrieval=false --interactive \
 | `/save [path]`    | —          | 将当前会话保存为 JSON 文件（默认路径 `~/.chatvcode/session.json`） |
 | `/load [path]`    | —          | 从 JSON 文件恢复会话（默认路径 `~/.chatvcode/session.json`）       |
 | `/history`        | —          | 显示对话历史摘要（轮数、预估 token 数、消息预览）                 |
+| `/model list`     | `/model ls`| 列出所有可用模型（按优先级扫描本地和全局目录）                    |
+| `/model info <path>` | —       | 显示指定模型的详细元数据（架构、参数量、上下文长度等）            |
+| `/model switch <path>` | —     | 运行时切换到不同模型（清空对话历史，保留系统提示）                |
+| `/model memory <path>` | —     | 估算指定模型的内存使用量（模型权重 + KV cache + 运行时开销）     |
+| `/model gpu <path>`    | —     | 根据模型大小推荐 GPU 层卸载数量                                   |
 
 #### 交互模式示例
 
@@ -160,6 +165,37 @@ The main function initializes the application and starts the event loop.
 📎 Sources (2):
   [1] src/main.rs:10 (main) [score: 0.920]
   [2] src/app.rs:42 (run) [score: 0.850]
+
+💬 > /model list
+Discovered 2 model(s):
+
+[1] qwen2.5-coder-7b.gguf, arch=qwen2, params=7.62B, ctx=32768, quant=Q4_K_M, size=4.4 GB, source=global
+    Path: /home/user/.chatvcode/models/qwen2.5-coder-7b.gguf
+
+[2] deepseek-coder-6.7b.gguf, arch=deepseek, params=6.70B, ctx=16384, quant=Q5_K_M, size=4.6 GB, source=local
+    Path: ./my-project/.chatvcode/models/deepseek-coder-6.7b.gguf
+
+Use `/model switch <path>` to switch models.
+
+💬 > /model memory /home/user/.chatvcode/models/qwen2.5-coder-7b.gguf
+Memory Estimation for /home/user/.chatvcode/models/qwen2.5-coder-7b.gguf
+Context size: 8192 tokens
+
+  Model weights : 4.4 GB
+  KV cache      : 1.0 GB
+  Overhead      : 512.0 MB
+  Total (est.)  : 5.9 GB
+  Status        : ✓ Expected to fit in available RAM
+
+💬 > /model switch /home/user/.chatvcode/models/qwen2.5-coder-7b.gguf
+⚙ Switching to model: /home/user/.chatvcode/models/qwen2.5-coder-7b.gguf
+  Memory estimate: 5.9 GB
+  Architecture: qwen2
+  Context size:  32768
+  Parameters:    7.62B
+  GPU layers:    0
+✓ Model switched successfully.
+  Conversation history cleared.
 
 💬 > /save
 ✓ Session saved to /home/user/.chatvcode/session.json
@@ -222,8 +258,11 @@ chatvcode chat "hello" --retrieval=false --interactive
 | `--retrieval`            | `true`      | 启用 RAG 检索（用 `--retrieval=false` 切换为纯 LLM 模式）   |
 | `--interactive`          | `false`     | 启用交互式多轮对话 REPL 模式                                |
 | `--llm-verbose-log`      | `false`     | 启用 llama.cpp/ggml 详细日志（tensor 创建、backend 注册等） |
+| `--config`               | —           | 配置文件路径（默认按优先级搜索：本地 > 全局）               |
 
 > **传参格式**：所有参数的统一传参格式为 `--<arg>=<value>`。布尔参数（`--retrieval`、`--stream`、`--llm-verbose-log` 等）还可使用 `--arg`（等价于 `--arg=true`）的简写形式。
+
+> **配置优先级**：CLI 参数 > 本地配置文件（`<cwd>/.chatvcode/config.json`）> 全局配置文件（`~/.chatvcode/config.json`）> 内置默认值。使用 `--config=<path>` 指定自定义配置文件，或依赖默认的搜索路径。当本地和全局配置文件同时存在时，两者的值会合并，本地文件的值优先。
 
 ## 所有 `index` 命令参数
 
@@ -296,15 +335,145 @@ Rust is a systems programming language focused on safety, speed, and concurrency
 
 RAG 模式下，`sources` 字段会包含代码引用来源（文件路径、行号、符号名、相似度分数）。
 
+## `model` 子命令：模型管理
+
+`chatvcode model` 提供模型发现、元数据查看、内存估算、GPU 层推荐和配置文件管理功能。
+
+```bash
+# 列出所有可用模型（按优先级扫描本地和全局目录）
+chatvcode model list
+
+# 查看模型详细元数据
+chatvcode model info /path/to/model.gguf
+
+# 估算模型内存使用量（指定上下文窗口大小）
+chatvcode model memory /path/to/model.gguf --n-ctx=8192
+
+# 推荐 GPU 层卸载数量（可选指定 VRAM 大小）
+chatvcode model gpu /path/to/model.gguf
+chatvcode model gpu /path/to/model.gguf --vram-gb=8
+
+# 查看当前配置（合并配置文件和默认值）
+chatvcode model config show
+
+# 创建默认配置文件
+chatvcode model config init
+
+# 验证配置文件
+chatvcode model config validate
+chatvcode model config validate --path=/custom/config.json
+```
+
+### 模型搜索优先级
+
+`model list` 和自动发现按以下优先级扫描模型目录：
+
+| 优先级 | 目录                                | 来源标记 | 说明                       |
+| ------ | ----------------------------------- | -------- | -------------------------- |
+| 1      | `<cwd>/.chatvcode/models/`          | local    | 当前项目的本地模型目录     |
+| 2      | `~/.chatvcode/models/`              | global   | 用户级全局模型目录         |
+
+> 本地项目模型优先于全局模型。相同路径的模型不会重复列出。
+
+### 内存估算
+
+`model memory` 根据 GGUF 元数据估算峰值内存使用：
+
+```
+Memory Estimation for /home/user/.chatvcode/models/qwen2.5-coder-7b.gguf
+Context size: 8192 tokens
+
+  Model weights : 4.4 GB
+  KV cache      : 1.0 GB
+  Overhead      : 512.0 MB
+  Total (est.)  : 5.9 GB
+  Status        : ✓ Expected to fit in available RAM
+```
+
+- **Model weights**：模型文件大小（GGUF 文件内存映射）
+- **KV cache**：`2 × n_head_kv × head_dim × n_ctx × 2 bytes × n_layer`
+- **Overhead**：运行时开销（激活值、缓冲区等），启发式估算为模型大小的 10%（256MB–2GB）
+- 当预估内存超过可用 RAM 时，会显示警告信息
+
+### GPU 层推荐
+
+`model gpu` 根据模型大小和可用 VRAM 推荐 GPU 层卸载数量：
+
+```
+GPU Layer Recommendation for /home/user/.chatvcode/models/qwen2.5-coder-7b.gguf
+  Total layers     : 28
+  Recommended      : 25 layers
+  Est. VRAM usage  : 7.2 GB
+  Note             : 25/28 layers fit in available VRAM (8.0 GB)
+```
+
+- 推荐值 `-1` 表示所有层均可放入 VRAM
+- 自动预留 512MB GPU 开销和 10% 安全余量
+- 可使用 `--vram-gb=N` 显式指定可用 VRAM
+
+### 配置文件
+
+配置文件支持本地（项目级）和全局两个层级，按以下优先级加载：
+
+1. **本地配置**：`<cwd>/.chatvcode/config.json`（当前工作目录下的项目级配置）
+2. **全局配置**：`~/.chatvcode/config.json`（用户级全局配置）
+3. **内置默认值**
+
+当本地和全局配置文件同时存在时，两者的值会合并，**本地文件的值优先**。所有字段均为可选，未设置的字段自动回退到下一级。
+
+配置文件为 JSON 格式，支持三个配置段：
+
+```json
+{
+  "model": {
+    "path": "/home/user/.chatvcode/models/qwen2.5-coder-7b.gguf",
+    "n_gpu_layers": 0,
+    "n_ctx": 8192,
+    "n_threads": 8,
+    "template": "auto",
+    "use_mmap": true,
+    "verbose_log": false
+  },
+  "generation": {
+    "temperature": 0.7,
+    "top_p": 0.9,
+    "top_k": 40,
+    "max_tokens": 2048
+  },
+  "chat": {
+    "system_prompt": "You are a helpful coding assistant.",
+    "stream": true,
+    "retrieval": true,
+    "top_k_retrieval": 16,
+    "context_token_budget": 0
+  }
+}
+```
+
+**完整优先级链**：CLI 参数 > 本地配置文件 > 全局配置文件 > 内置默认值。
+
+**配置管理命令**：
+- 使用 `chatvcode model config init` 创建默认全局配置文件
+- 使用 `chatvcode model config show` 查看合并后的完整配置（显示哪些文件存在及其优先级）
+- 使用 `chatvcode model config validate` 验证配置文件格式
+- 使用 `--config=<path>` 指定自定义配置文件路径（覆盖默认搜索）
+
+**典型用法**：
+- 在 `~/.chatvcode/config.json` 中设置全局偏好（如默认模型路径、GPU 层数）
+- 在项目目录的 `.chatvcode/config.json` 中设置项目特定配置（如上下文大小、系统提示）
+- 本地配置只需包含需要覆盖的字段，其余字段自动继承全局配置
+
 ## 模型自动发现逻辑
 
 当不指定 `--model` 时，CLI 按以下规则自动发现模型：
 
-1. 扫描 `~/.chatvcode/models/` 目录
+1. 按优先级扫描模型目录（本地 `.chatvcode/models/` > 全局 `~/.chatvcode/models/`）
 2. 验证每个 `.gguf` 文件的魔数和版本
 3. 若恰好有一个有效模型 → 自动使用
 4. 若没有模型 → 输出友好引导信息，提示如何下载
-5. 若有多个模型 → 报错并列出所有模型，要求用 `--model` 指定
+5. 若有多个模型 → 列出所有模型并选择第一个作为默认（建议使用 `--model` 显式指定）
+
+> 加载前会自动显示内存估算信息。若预估内存可能超出可用 RAM，会显示警告。
 
 ## Chat 模板
 

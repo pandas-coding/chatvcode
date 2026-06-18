@@ -40,6 +40,7 @@ pub mod error;
 pub mod ffi;
 pub mod gguf;
 pub mod log;
+pub mod model;
 pub mod service;
 pub mod types;
 
@@ -50,6 +51,13 @@ pub use gguf::{
     GGUF_MAGIC, GgufHeader, GgufMetadata, SUPPORTED_VERSIONS, discover_gguf_models,
     format_file_size, format_gguf_summary, format_param_count, infer_chat_template, is_gguf_file,
     load_model_safe, pre_validate_model, read_gguf_metadata, scan_model, validate_gguf,
+};
+pub use model::{
+    ChatvcodeConfig, ChatConfig, DiscoveredModel, GenerationConfig, GpuRecommendation,
+    MemoryEstimate, ModelConfig, ModelSource, default_config_path, estimate_memory,
+    estimate_memory_from_metadata, list_models, list_models_in_dir, local_config_path,
+    local_model_dir, model_search_dirs, recommend_gpu_layers, recommend_gpu_layers_from_metadata,
+    format_bytes,
 };
 pub use service::{
     KvCacheState, LlamaEmbeddingService, LlamaService, LlmService, MockLlmService,

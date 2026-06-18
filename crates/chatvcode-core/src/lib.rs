@@ -738,9 +738,64 @@ pub fn search_with_service(
             .collect()
     };
 
+    // Extract file path reference and keywords for symbol-name injection and re-ranking.
+    // The file path is stripped from the query before keyword extraction to prevent
+    // path components from polluting keyword matching.
+    let (query_file_path, _) = chat::extract_file_path_from_query(query);
+    let keywords = chat::extract_keywords(query);
+
+    // Symbol-name injection: scan the metadata store for chunks whose symbol
+    // names exactly match a query keyword (case-insensitive). These chunks
+    // are the most likely answers but may have low semantic similarity.
+    if !keywords.is_empty() && !metadata_store.is_empty() {
+        let max_semantic = results
+            .iter()
+            .map(|r| r.score)
+            .fold(f32::NEG_INFINITY, f32::max);
+        let boost_score = max_semantic + 0.01;
+        let existing_ids: std::collections::HashSet<String> =
+            results.iter().map(|r| r.chunk_id.clone()).collect();
+
+        for meta in metadata_store.entries.values() {
+            if existing_ids.contains(&meta.chunk_id) {
+                continue;
+            }
+            if let Some(ref sym) = meta.symbol_name {
+                let sym_lower = sym.to_lowercase();
+                let symbol_matches = keywords.iter().any(|kw| sym_lower == *kw || sym_lower.contains(kw.as_str()));
+                if symbol_matches {
+                    let chunk = CodeChunk {
+                        id: meta.chunk_id.clone(),
+                        file_path: meta.file_path.clone(),
+                        language: FileLanguage::from_extension(&meta.language),
+                        kind: meta.kind,
+                        symbol_name: meta.symbol_name.clone(),
+                        span: ChunkSpan::new(
+                            meta.start_byte,
+                            meta.end_byte,
+                            meta.start_line.saturating_sub(1),
+                            meta.end_line.saturating_sub(1),
+                        ),
+                        source_text: meta.source_text.clone(),
+                    };
+                    log::info!(
+                        "Symbol-name injection: adding '{}' (symbol={}) with boost {:.4}",
+                        meta.chunk_id,
+                        sym,
+                        boost_score
+                    );
+                    results.push(SearchResult {
+                        chunk_id: meta.chunk_id.clone(),
+                        score: boost_score,
+                        chunk,
+                    });
+                }
+            }
+        }
+    }
+
     // Keyword-based re-ranking: boost chunks whose source text or symbol name
     // contains exact terms from the query.
-    let keywords = chat::extract_keywords(query);
     if !keywords.is_empty() {
         let sem_scores: Vec<f32> = results.iter().map(|r| r.score).collect();
         let sem_min = sem_scores.iter().cloned().fold(f32::INFINITY, f32::min);
@@ -771,6 +826,22 @@ pub fn search_with_service(
             keywords.len(),
             keywords
         );
+    }
+
+    // File-path boosting: when the query mentions a specific file, boost
+    // chunks from that file to ensure they rank above chunks from other files
+    // that may have high keyword overlap from shared path components.
+    if let Some(ref file_path) = query_file_path {
+        let normalized_query_path = file_path.replace('\\', "/");
+        for result in &mut results {
+            let chunk_path = result.chunk.file_path.to_string_lossy().replace('\\', "/");
+            if chunk_path.ends_with(&normalized_query_path)
+                || normalized_query_path.ends_with(&chunk_path)
+            {
+                result.score += 0.2;
+            }
+        }
+        log::info!("File-path boosting applied for path: {:?}", file_path);
     }
 
     results.sort_by(|a, b| {

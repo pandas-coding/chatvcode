@@ -203,7 +203,7 @@ fn generation_params_default_values() {
     assert!((params.min_p - 0.0).abs() < f32::EPSILON);
     assert!((params.repeat_penalty - 1.1).abs() < f32::EPSILON);
     assert_eq!(params.repeat_last_n, 64);
-    assert_eq!(params.max_tokens, 512);
+    assert_eq!(params.max_tokens, 2048);
     assert!(params.stop_strings.is_empty());
     assert_eq!(params.seed, u32::MAX);
 }

@@ -818,13 +818,54 @@ fn retrieve_context(
     // Load metadata store
     let metadata_store = load_metadata_store(&metadata_store_path)?;
 
+    // Extract file path reference and keywords for symbol-name injection and re-ranking.
+    // The file path is stripped from the query before keyword extraction to prevent
+    // path components from polluting keyword matching.
+    let (query_file_path, _) = extract_file_path_from_query(question);
+    let keywords = extract_keywords(question);
+
     // Resolve chunk IDs to metadata
     let mut results_with_meta = Vec::new();
+    let mut seen_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
     for (chunk_id, score) in &raw_results {
         if let Some(meta) = metadata_store.get(chunk_id) {
+            seen_ids.insert(chunk_id.clone());
             results_with_meta.push((meta.clone(), *score));
         } else {
             log::warn!("Chunk ID '{}' not found in metadata store, skipping", chunk_id);
+        }
+    }
+
+    // Symbol-name injection: scan the metadata store for chunks whose symbol
+    // names exactly match a query keyword (case-insensitive). These chunks
+    // are the most likely answers (e.g., querying "struct ChatArgs" should
+    // always include the ChatArgs definition), but may have low semantic
+    // similarity when the embedding model has poor discrimination.
+    if !keywords.is_empty() && !metadata_store.is_empty() {
+        let max_semantic = raw_results
+            .iter()
+            .map(|(_, s)| *s)
+            .fold(f32::NEG_INFINITY, f32::max);
+        let boost_score = max_semantic + 0.01;
+
+        for meta in metadata_store.entries.values() {
+            if seen_ids.contains(&meta.chunk_id) {
+                continue;
+            }
+            if let Some(ref sym) = meta.symbol_name {
+                let sym_lower = sym.to_lowercase();
+                let symbol_matches = keywords.iter().any(|kw| sym_lower == *kw || sym_lower.contains(kw.as_str()));
+                if symbol_matches {
+                    log::info!(
+                        "Symbol-name injection: adding chunk '{}' (symbol={}) with boost score {:.4}",
+                        meta.chunk_id,
+                        sym,
+                        boost_score
+                    );
+                    seen_ids.insert(meta.chunk_id.clone());
+                    results_with_meta.push((meta.clone(), boost_score));
+                }
+            }
         }
     }
 
@@ -840,7 +881,6 @@ fn retrieve_context(
     // model has poor discrimination (uniform scores), as it ensures chunks with
     // exact keyword matches (e.g., a struct definition when querying "struct Foo")
     // are promoted to the top of the results.
-    let keywords = extract_keywords(question);
     if !keywords.is_empty() {
         // Compute the semantic score range for normalization
         let sem_scores: Vec<f32> = results_with_meta.iter().map(|(_, s)| *s).collect();
@@ -878,6 +918,22 @@ fn retrieve_context(
         );
     }
 
+    // File-path boosting: when the query mentions a specific file, boost
+    // chunks from that file to ensure they rank above chunks from other files
+    // that may have high keyword overlap from shared path components.
+    if let Some(ref file_path) = query_file_path {
+        let normalized_query_path = file_path.replace('\\', "/");
+        for (meta, score) in &mut results_with_meta {
+            let chunk_path = meta.file_path.to_string_lossy().replace('\\', "/");
+            if chunk_path.ends_with(&normalized_query_path)
+                || normalized_query_path.ends_with(&chunk_path)
+            {
+                *score += 0.2;
+            }
+        }
+        log::info!("File-path boosting applied for path: {:?}", file_path);
+    }
+
     // Sort by re-ranked score descending
     results_with_meta.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
 
@@ -903,11 +959,102 @@ fn retrieve_context(
     Ok((trimmed_snippets, trimmed_refs, retrieved_count, used_count))
 }
 
+/// Extracts a file path reference from a natural-language query.
+///
+/// Detects patterns like `"in file src/lib.rs"`, `"from src/main.rs"`, or
+/// standalone path tokens containing directory separators or known source
+/// file extensions. Returns the extracted path (if any) and the query with
+/// the path portion removed, so that path components do not pollute keyword
+/// extraction.
+pub(crate) fn extract_file_path_from_query(query: &str) -> (Option<String>, String) {
+    let lower = query.to_lowercase();
+
+    let prefixes = [
+        "in file ",
+        "in the file ",
+        "from file ",
+        "of file ",
+        "in source file ",
+    ];
+
+    for prefix in &prefixes {
+        if let Some(pos) = lower.find(prefix) {
+            let path_start = pos + prefix.len();
+            let rest = &query[path_start..];
+            let path_end = rest
+                .find(['?', '!', ',', ';'])
+                .unwrap_or(rest.len());
+            let path = rest[..path_end].trim();
+            if !path.is_empty() {
+                let mut cleaned = String::new();
+                cleaned.push_str(query[..pos].trim_end());
+                let after = &query[path_start + path_end..];
+                if !after.is_empty() {
+                    if !cleaned.is_empty() {
+                        cleaned.push(' ');
+                    }
+                    cleaned.push_str(after.trim_start());
+                }
+                return (Some(path.to_string()), cleaned.trim().to_string());
+            }
+        }
+    }
+
+    let mut best_path: Option<(usize, usize, &str)> = None;
+
+    for (i, c) in query.char_indices() {
+        if c == '/' || c == '\\' {
+            let start = query[..i]
+                .rfind(|c: char| c.is_whitespace())
+                .map(|p| p + 1)
+                .unwrap_or(0);
+            let end = query[i..]
+                .find(|c: char| c.is_whitespace())
+                .map(|p| i + p)
+                .unwrap_or(query.len());
+            let token = &query[start..end];
+            if token.contains('/') || token.contains('\\') {
+                let span_len = end - start;
+                if best_path.is_none_or(|(_, len, _)| span_len > len) {
+                    best_path = Some((start, span_len, token));
+                }
+            }
+        }
+    }
+
+    if let Some((start, len, path)) = best_path {
+        let mut cleaned = String::new();
+        cleaned.push_str(query[..start].trim_end());
+        let after = &query[start + len..];
+        if !after.is_empty() {
+            if !cleaned.is_empty() {
+                cleaned.push(' ');
+            }
+            cleaned.push_str(after.trim_start());
+        }
+        return (Some(path.to_string()), cleaned.trim().to_string());
+    }
+
+    let extensions = [".rs", ".py", ".js", ".ts", ".tsx", ".jsx", ".php", ".c", ".cpp", ".h"];
+    for word in query.split_whitespace() {
+        let word_lower = word.to_lowercase();
+        if extensions.iter().any(|ext| word_lower.ends_with(ext)) {
+            let cleaned = query.replacen(word, "", 1);
+            let cleaned = cleaned.split_whitespace().collect::<Vec<_>>().join(" ");
+            return (Some(word.to_string()), cleaned);
+        }
+    }
+
+    (None, query.to_string())
+}
+
 /// Extract significant keywords from a query for re-ranking.
 ///
-/// Filters out common stop words and very short tokens that would
-/// produce noisy matches across many code chunks.
+/// Filters out common stop words, very short tokens, and file path
+/// references that would produce noisy matches across many code chunks.
 pub(crate) fn extract_keywords(query: &str) -> Vec<String> {
+    let (_, cleaned_query) = extract_file_path_from_query(query);
+
     let stop_words = [
         "what", "how", "where", "when", "why", "who", "which", "the", "a", "an",
         "is", "are", "was", "were", "be", "been", "being", "do", "does", "did",
@@ -923,12 +1070,13 @@ pub(crate) fn extract_keywords(query: &str) -> Vec<String> {
         "implemented", "find", "show", "list", "tell", "explain", "describe",
         "members", "fields", "methods", "functions", "struct", "enum",
         "class", "trait", "interface", "type", "function", "method",
+        "file", "path", "directory", "folder", "src", "lib", "crates",
     ];
 
     let mut keywords = Vec::new();
     let mut seen = std::collections::HashSet::new();
 
-    for word in query.split(|c: char| !c.is_alphanumeric() && c != '_') {
+    for word in cleaned_query.split(|c: char| !c.is_alphanumeric() && c != '_') {
         let lower = word.to_lowercase();
         if lower.len() >= 3 && !stop_words.contains(&lower.as_str()) && seen.insert(lower.clone()) {
             keywords.push(lower);
@@ -942,8 +1090,9 @@ pub(crate) fn extract_keywords(query: &str) -> Vec<String> {
 ///
 /// Returns a value in `[0.0, 1.0]` based on how many query keywords
 /// appear in the chunk's source text and symbol name. Symbol name
-/// matches are weighted higher since they indicate the chunk defines
-/// the queried entity.
+/// matches are weighted much higher since they indicate the chunk
+/// *defines* the queried entity. An exact symbol-name match (the
+/// symbol equals a keyword) receives the maximum boost.
 pub(crate) fn keyword_score(keywords: &[String], source_text: &str, symbol_name: Option<&str>) -> f32 {
     if keywords.is_empty() {
         return 0.0;
@@ -953,21 +1102,30 @@ pub(crate) fn keyword_score(keywords: &[String], source_text: &str, symbol_name:
     let symbol_lower = symbol_name.map(|s| s.to_lowercase());
 
     let mut text_matches = 0usize;
-    let mut symbol_match = false;
+    let mut symbol_exact = false;
+    let mut symbol_contains = false;
 
     for kw in keywords {
         if source_lower.contains(kw.as_str()) {
             text_matches += 1;
         }
         if let Some(ref sym) = symbol_lower {
-            if sym.contains(kw.as_str()) {
-                symbol_match = true;
+            if *sym == *kw {
+                symbol_exact = true;
+            } else if sym.contains(kw.as_str()) {
+                symbol_contains = true;
             }
         }
     }
 
     let text_score = text_matches as f32 / keywords.len() as f32;
-    let symbol_boost = if symbol_match { 0.3 } else { 0.0 };
+    let symbol_boost = if symbol_exact {
+        0.6
+    } else if symbol_contains {
+        0.2
+    } else {
+        0.0
+    };
 
     (text_score + symbol_boost).min(1.0)
 }
@@ -1419,5 +1577,120 @@ mod tests {
         // These should use the explicit paths
         assert_eq!(opts.resolve_vector_store_path(), PathBuf::from("/data/vectors.atvs"));
         assert_eq!(opts.resolve_metadata_store_path(), PathBuf::from("/data/chunks.atmd"));
+    }
+
+    #[test]
+    fn test_extract_file_path_in_file_prefix() {
+        let (path, cleaned) = extract_file_path_from_query(
+            "list the members of struct ChatArgs in file crates/chatvcode-cli/src/lib.rs",
+        );
+        assert_eq!(path.as_deref(), Some("crates/chatvcode-cli/src/lib.rs"));
+        assert!(!cleaned.contains("crates"));
+        assert!(!cleaned.contains("lib.rs"));
+        assert!(cleaned.contains("ChatArgs"));
+    }
+
+    #[test]
+    fn test_extract_file_path_backslash_path() {
+        let (path, cleaned) = extract_file_path_from_query(
+            "list the members of struct ChatArgs in file crates\\chatvcode-cli\\src\\lib.rs",
+        );
+        assert_eq!(path.as_deref(), Some("crates\\chatvcode-cli\\src\\lib.rs"));
+        assert!(cleaned.contains("ChatArgs"));
+        assert!(!cleaned.contains("chatvcode"));
+    }
+
+    #[test]
+    fn test_extract_file_path_standalone_extension() {
+        let (path, cleaned) =
+            extract_file_path_from_query("what does main do in main.rs");
+        assert_eq!(path.as_deref(), Some("main.rs"));
+        assert!(cleaned.contains("main"));
+        assert!(!cleaned.contains("main.rs"));
+    }
+
+    #[test]
+    fn test_extract_file_path_no_path() {
+        let (path, cleaned) =
+            extract_file_path_from_query("what does the parse function do");
+        assert!(path.is_none());
+        assert_eq!(cleaned, "what does the parse function do");
+    }
+
+    #[test]
+    fn test_extract_file_path_from_file_prefix() {
+        let (path, _) =
+            extract_file_path_from_query("show me the imports from src/lib.rs");
+        assert_eq!(path.as_deref(), Some("src/lib.rs"));
+    }
+
+    #[test]
+    fn test_extract_keywords_strips_file_path() {
+        let keywords = extract_keywords(
+            "list the members of struct ChatArgs in file crates\\chatvcode-cli\\src\\lib.rs",
+        );
+        assert!(keywords.contains(&"chatargs".to_string()));
+        assert!(!keywords.contains(&"crates".to_string()));
+        assert!(!keywords.contains(&"chatvcode".to_string()));
+        assert!(!keywords.contains(&"cli".to_string()));
+        assert!(!keywords.contains(&"src".to_string()));
+        assert!(!keywords.contains(&"lib".to_string()));
+        assert!(!keywords.contains(&"file".to_string()));
+    }
+
+    #[test]
+    fn test_extract_keywords_no_path_unchanged() {
+        let keywords = extract_keywords("how does the render function work");
+        assert!(keywords.contains(&"render".to_string()));
+        assert!(keywords.contains(&"work".to_string()));
+    }
+
+    #[test]
+    fn test_keyword_score_exact_symbol_match() {
+        let keywords = vec!["chatargs".to_string(), "question".to_string()];
+        let score_exact = keyword_score(
+            &keywords,
+            "struct ChatArgs { question: String }",
+            Some("ChatArgs"),
+        );
+        let score_contains = keyword_score(
+            &keywords,
+            "fn run_chat() { let args = make_args(); }",
+            Some("run_chat"),
+        );
+        assert!(
+            score_exact > score_contains,
+            "exact symbol match ({score_exact}) should score higher than text-only match ({score_contains})"
+        );
+    }
+
+    #[test]
+    fn test_keyword_score_symbol_exact_vs_contains() {
+        let keywords = vec!["config".to_string(), "debug".to_string()];
+        let score_exact = keyword_score(
+            &keywords,
+            "struct Config { debug: bool }",
+            Some("Config"),
+        );
+        let score_contains = keyword_score(
+            &keywords,
+            "struct ConfigLoader { path: String }",
+            Some("ConfigLoader"),
+        );
+        assert!(
+            score_exact > score_contains,
+            "exact symbol match ({score_exact}) should score higher than partial match ({score_contains})"
+        );
+    }
+
+    #[test]
+    fn test_keyword_score_no_match() {
+        let keywords = vec!["render".to_string()];
+        let score = keyword_score(
+            &keywords,
+            "fn parse() {}",
+            Some("parse"),
+        );
+        assert!((score - 0.0).abs() < f32::EPSILON);
     }
 }

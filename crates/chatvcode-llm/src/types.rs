@@ -235,7 +235,7 @@ impl Default for GenerationParams {
             min_p: 0.0,
             repeat_penalty: 1.1,
             repeat_last_n: 64,
-            max_tokens: 512,
+            max_tokens: 2048,
             stop_strings: Vec::new(),
             seed: u32::MAX,
         }
@@ -270,10 +270,10 @@ impl GenerationParams {
         self
     }
 
-    /// Set max tokens.
+    /// Set max tokens, clamped to `[1, 65536]`.
     #[must_use]
     pub const fn with_max_tokens(mut self, n: i32) -> Self {
-        self.max_tokens = n;
+        self.max_tokens = if n < 1 { 1 } else if n > 65536 { 65536 } else { n };
         self
     }
 
@@ -1458,8 +1458,17 @@ mod tests {
         assert!((params.temperature - 0.7).abs() < f32::EPSILON);
         assert!((params.top_p - 0.9).abs() < f32::EPSILON);
         assert_eq!(params.top_k, 40);
-        assert_eq!(params.max_tokens, 512);
+        assert_eq!(params.max_tokens, 2048);
         assert_eq!(params.seed, u32::MAX);
+    }
+
+    #[test]
+    fn test_generation_params_max_tokens_clamping() {
+        assert_eq!(GenerationParams::default().with_max_tokens(100).max_tokens, 100);
+        assert_eq!(GenerationParams::default().with_max_tokens(0).max_tokens, 1);
+        assert_eq!(GenerationParams::default().with_max_tokens(-1).max_tokens, 1);
+        assert_eq!(GenerationParams::default().with_max_tokens(100_000).max_tokens, 65536);
+        assert_eq!(GenerationParams::default().with_max_tokens(65536).max_tokens, 65536);
     }
 
     #[test]

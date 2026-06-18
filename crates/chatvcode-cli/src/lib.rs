@@ -193,8 +193,8 @@ pub enum Commands {
         /// Temperature for generation (default: 0.7).
         #[arg(short, long, default_value = "0.7", help = "Temperature for generation")]
         temperature: f32,
-        /// Maximum number of tokens to generate (default: 512).
-        #[arg(long, default_value = "512", help = "Maximum number of tokens to generate")]
+        /// Maximum number of tokens to generate (default: 2048, range: 1-65536).
+        #[arg(long, default_value = "2048", help = "Maximum number of tokens to generate")]
         max_tokens: i32,
         /// Top-k sampling parameter (default: 40).
         #[arg(long, default_value = "40", help = "Top-k sampling parameter")]
@@ -942,7 +942,7 @@ fn run_interactive_chat(
 
     session = session
         .max_context_tokens(args.n_ctx as usize)
-        .reserve_for_response(args.max_tokens.max(512) as usize);
+        .reserve_for_response(args.max_tokens.max(1024) as usize);
 
     let embedding_service: Option<Box<dyn EmbeddingService>> = if args.retrieval {
         match setup_embedding_for_interactive(args) {
@@ -2300,7 +2300,7 @@ mod tests {
             } => {
                 assert_eq!(path, ".");
                 assert!((temperature - 0.7).abs() < f32::EPSILON);
-                assert_eq!(max_tokens, 512);
+                assert_eq!(max_tokens, 2048);
                 assert_eq!(top_k, 40);
                 assert!((top_p - 0.9).abs() < f32::EPSILON);
                 assert_eq!(template, "auto");

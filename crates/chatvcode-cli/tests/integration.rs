@@ -280,6 +280,7 @@ fn cli_commands_index_parses_path() {
         Commands::Index { path, .. } => assert_eq!(path, "/some/path"),
         Commands::Search { .. } => {}
         Commands::Chat { .. } => {}
+        Commands::Model { .. } => {}
     }
 }
 
@@ -344,6 +345,7 @@ fn cli_commands_search_parses_query() {
         Commands::Search { query, .. } => assert_eq!(query, "find function"),
         Commands::Index { .. } => panic!("expected Search command"),
         Commands::Chat { .. } => panic!("expected Search command"),
+        Commands::Model { .. } => panic!("expected Search command"),
     }
 }
 
@@ -357,6 +359,7 @@ fn cli_commands_search_default_top_k() {
         Commands::Search { top_k, .. } => assert_eq!(top_k, 10),
         Commands::Index { .. } => panic!("expected Search command"),
         Commands::Chat { .. } => panic!("expected Search command"),
+        Commands::Model { .. } => panic!("expected Search command"),
     }
 }
 
@@ -377,6 +380,7 @@ fn cli_commands_search_custom_top_k() {
         Commands::Search { top_k, .. } => assert_eq!(top_k, 5),
         Commands::Index { .. } => panic!("expected Search command"),
         Commands::Chat { .. } => panic!("expected Search command"),
+        Commands::Model { .. } => panic!("expected Search command"),
     }
 }
 
@@ -397,6 +401,7 @@ fn cli_commands_search_with_min_score() {
         Commands::Search { min_score, .. } => assert_eq!(min_score, Some(0.5f32)),
         Commands::Index { .. } => panic!("expected Search command"),
         Commands::Chat { .. } => panic!("expected Search command"),
+        Commands::Model { .. } => panic!("expected Search command"),
     }
 }
 

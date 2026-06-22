@@ -258,6 +258,7 @@ version = "0.1.0"
 dependencies = [
  "bitflags",
  "cmake",
+ "criterion",
  "dirs",
  "insta",
  "log",

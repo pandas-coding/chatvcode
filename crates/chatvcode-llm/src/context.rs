@@ -24,6 +24,23 @@ use crate::types::{GenerationParams, InferenceResponse, ModelInfo, StopReason, T
 /// A loaded GGUF model.
 ///
 /// Wraps a `*mut llama_model` and provides safe access to model metadata.
+/// The model is automatically freed when this struct is dropped.
+///
+/// # Thread Safety
+///
+/// `LlamaModel` is `Send + Sync` for read-only access. Multiple contexts
+/// can share the same model via `Arc<LlamaModel>`.
+///
+/// # Example
+///
+/// ```ignore
+/// use chatvcode_llm::LlamaModel;
+/// use std::path::Path;
+///
+/// let model = LlamaModel::load(Path::new("model.gguf"), 0, true, false)?;
+/// println!("Model: {}", model.info().description);
+/// println!("Architecture: {}", model.info().architecture);
+/// ```
 pub struct LlamaModel {
     ptr: *mut ffi::llama_model,
     info: ModelInfo,
@@ -327,6 +344,32 @@ impl Drop for LlamaModel {
 ///
 /// Holds the KV cache, tokenizer state, and sampler chain.
 /// Uses `UnsafeCell` for the sampler to allow rebuilding during inference.
+///
+/// # Thread Safety
+///
+/// `LlamaContext` is `Send + Sync` but access must be synchronized at a
+/// higher level. The context is not thread-safe for concurrent inference.
+///
+/// # KV Cache Management
+///
+/// The context maintains a KV cache that can be reused across inference
+/// calls via [`infer_incremental`](Self::infer_incremental) and
+/// [`infer_stream_incremental`](Self::infer_stream_incremental). Use
+/// [`clear_kv_cache`](Self::clear_kv_cache) to discard cached state.
+///
+/// # Example
+///
+/// ```ignore
+/// use chatvcode_llm::{LlamaContext, LlamaModel, GenerationParams};
+/// use std::sync::Arc;
+///
+/// let model = Arc::new(LlamaModel::load("model.gguf", 0, true, false)?);
+/// let ctx = LlamaContext::new(model, 8192, 8192, 4, 4)?;
+///
+/// let tokens = ctx.tokenize("Hello", true)?;
+/// let response = ctx.infer(&tokens, &GenerationParams::default(), None)?;
+/// println!("{}", response.text);
+/// ```
 pub struct LlamaContext {
     ctx: *mut ffi::llama_context,
     model: Arc<LlamaModel>,
@@ -1011,58 +1054,13 @@ impl LlamaContext {
 
     /// Rebuild the sampler chain based on generation params.
     fn rebuild_sampler(&self, params: &GenerationParams) {
-        // Free the old sampler
         let old_sampler = self.get_sampler();
         if !old_sampler.is_null() {
             unsafe { ffi::llama_sampler_free(old_sampler) };
         }
 
-        // Create chain
-        let chain = unsafe {
-            ffi::llama_sampler_chain_init(ffi::llama_sampler_chain_params { no_perf: false })
-        };
+        let chain = crate::sampler::build_sampler_chain(params);
 
-        // Add samplers in order
-        if params.repeat_penalty != 1.0 {
-            let penalties = unsafe {
-                ffi::llama_sampler_init_penalties(
-                    params.repeat_last_n,
-                    params.repeat_penalty,
-                    0.0, // freq penalty
-                    0.0, // presence penalty
-                )
-            };
-            unsafe { ffi::llama_sampler_chain_add(chain, penalties) };
-        }
-
-        if params.top_k > 0 {
-            let top_k = unsafe { ffi::llama_sampler_init_top_k(params.top_k) };
-            unsafe { ffi::llama_sampler_chain_add(chain, top_k) };
-        }
-
-        if params.top_p < 1.0 {
-            let top_p = unsafe { ffi::llama_sampler_init_top_p(params.top_p, 1) };
-            unsafe { ffi::llama_sampler_chain_add(chain, top_p) };
-        }
-
-        if params.min_p > 0.0 {
-            let min_p = unsafe { ffi::llama_sampler_init_min_p(params.min_p, 1) };
-            unsafe { ffi::llama_sampler_chain_add(chain, min_p) };
-        }
-
-        if params.temperature <= 0.0 {
-            // Greedy
-            let greedy = unsafe { ffi::llama_sampler_init_greedy() };
-            unsafe { ffi::llama_sampler_chain_add(chain, greedy) };
-        } else {
-            let temp = unsafe { ffi::llama_sampler_init_temp(params.temperature) };
-            unsafe { ffi::llama_sampler_chain_add(chain, temp) };
-
-            let dist = unsafe { ffi::llama_sampler_init_dist(params.seed) };
-            unsafe { ffi::llama_sampler_chain_add(chain, dist) };
-        }
-
-        // Update the pointer via UnsafeCell
         unsafe {
             *self.sampler.get() = chain;
         }
@@ -1070,20 +1068,7 @@ impl LlamaContext {
 
     /// Create a default sampler chain.
     fn create_default_sampler() -> *mut ffi::llama_sampler {
-        unsafe {
-            let chain =
-                ffi::llama_sampler_chain_init(ffi::llama_sampler_chain_params { no_perf: false });
-            // Default: top-k=40, top-p=0.9, temp=0.7, dist
-            let top_k = ffi::llama_sampler_init_top_k(40);
-            ffi::llama_sampler_chain_add(chain, top_k);
-            let top_p = ffi::llama_sampler_init_top_p(0.9, 1);
-            ffi::llama_sampler_chain_add(chain, top_p);
-            let temp = ffi::llama_sampler_init_temp(0.7);
-            ffi::llama_sampler_chain_add(chain, temp);
-            let dist = ffi::llama_sampler_init_dist(u32::MAX);
-            ffi::llama_sampler_chain_add(chain, dist);
-            chain
-        }
+        crate::sampler::default_sampler_chain()
     }
 }
 
@@ -1111,13 +1096,30 @@ impl Drop for LlamaContext {
 /// allowing the model to output embedding vectors via
 /// `llama_get_embeddings()`.
 ///
-/// # Usage
+/// # Thread Safety
+///
+/// `LlamaEmbeddingContext` is `Send + Sync`. The [`embed`](Self::embed)
+/// method takes `&mut self` to ensure exclusive access during computation.
+///
+/// # Performance
+///
+/// For batch embedding, use [`embed_batch`](Self::embed_batch) which
+/// processes multiple texts sequentially with progress logging.
+///
+/// # Example
 ///
 /// ```ignore
-/// let model = LlamaModel::load("model.gguf", 0, true, false)?;
-/// let embed_ctx = LlamaEmbeddingContext::new(Arc::new(model), 512, 4)?;
-/// let embedding = embed_ctx.embed("Hello, world!")?;
-/// println!("Embedding dim: {}", embedding.len());
+/// use chatvcode_llm::{LlamaEmbeddingContext, LlamaModel};
+/// use std::sync::Arc;
+///
+/// let model = Arc::new(LlamaModel::load("model.gguf", 0, true, false)?);
+/// let mut ctx = LlamaEmbeddingContext::new(model, 512, 4)?;
+///
+/// let embedding = ctx.embed("Hello, world!")?;
+/// println!("Embedding dimension: {}", ctx.dimension());
+///
+/// let batch = ctx.embed_batch(&["text1", "text2", "text3"])?;
+/// assert_eq!(batch.len(), 3);
 /// ```
 pub struct LlamaEmbeddingContext {
     ctx: *mut ffi::llama_context,

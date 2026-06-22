@@ -485,10 +485,9 @@ pub fn recommend_gpu_layers_from_metadata(
         -1 // all layers fit
     } else {
         // Leave a small margin (10%) for safety
-        (max_layers_by_vram as f64 * 0.9) as i32
+        let layers = (max_layers_by_vram as f64 * 0.9) as i32;
+        layers.max(0)
     };
-
-    let recommended = recommended.max(0);
     let est_vram = if recommended < 0 {
         vram_per_layer * total_layers as u64 + gpu_overhead
     } else {

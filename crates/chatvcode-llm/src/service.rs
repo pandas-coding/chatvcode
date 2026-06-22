@@ -117,6 +117,34 @@ struct ContextParams {
 }
 
 /// A [`LlmService`] backed by `llama.cpp` via our FFI bindings.
+///
+/// This is the primary production implementation of the [`LlmService`] trait.
+/// It handles:
+///
+/// - GGUF file validation and metadata extraction
+/// - Model loading with configurable GPU offload and memory mapping
+/// - Chat template auto-detection from model metadata
+/// - Synchronous and streaming inference
+/// - KV cache reuse for multi-turn conversations
+///
+/// # Thread Safety
+///
+/// `LlamaService` is `Send + Sync`. However, inference methods take `&self`
+/// and internally use the single `LlamaContext`, so concurrent inference
+/// calls will block each other. For parallel inference, create multiple
+/// service instances.
+///
+/// # Example
+///
+/// ```ignore
+/// use chatvcode_llm::{LlamaService, LlmConfig, LlmService, GenerationParams};
+///
+/// let config = LlmConfig::new("model.gguf").with_n_ctx(8192);
+/// let service = LlamaService::new(&config)?;
+///
+/// let response = service.infer("Hello", &GenerationParams::default(), None)?;
+/// println!("{} ({:.1} tok/s)", response.text, response.tokens_per_second);
+/// ```
 pub struct LlamaService {
     model: Arc<LlamaModel>,
     context: LlamaContext,
@@ -840,6 +868,20 @@ fn enhance_model_error(error: LlmError, model_path: &Path) -> LlmError {
 /// A mock [`LlmService`] implementation for testing.
 ///
 /// Returns pre-configured responses without requiring a real model.
+/// Useful for unit tests and integration tests where model loading
+/// is not needed.
+///
+/// # Example
+///
+/// ```ignore
+/// use chatvcode_llm::{MockLlmService, LlmService, GenerationParams};
+///
+/// let mock = MockLlmService::new("Hello, world!")
+///     .with_tokens_per_second(100.0);
+///
+/// let response = mock.infer("test", &GenerationParams::default(), None)?;
+/// assert_eq!(response.text, "Hello, world!");
+/// ```
 pub struct MockLlmService {
     info: ModelInfo,
     /// Fixed response text for `infer()` calls.

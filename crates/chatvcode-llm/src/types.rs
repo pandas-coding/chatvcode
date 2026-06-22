@@ -539,6 +539,9 @@ mod tests {
         assert_eq!(ChatTemplate::ChatML.template_name(), Some("chatml"));
         assert_eq!(ChatTemplate::Llama3.template_name(), Some("llama3"));
         assert_eq!(ChatTemplate::DeepSeek.template_name(), Some("deepseek"));
+        assert_eq!(ChatTemplate::Phi.template_name(), Some("phi3"));
+        assert_eq!(ChatTemplate::Gemma.template_name(), Some("gemma"));
+        assert_eq!(ChatTemplate::CommandR.template_name(), Some("command-r"));
         assert_eq!(
             ChatTemplate::Custom("{{ bos_token }}".into()).custom_template(),
             Some("{{ bos_token }}")
@@ -601,6 +604,52 @@ mod tests {
         assert!(prompt.contains("<｜User｜>Hello"));
         assert!(prompt.contains("<｜Assistant｜>Hi there!<｜end▁of▁sentence｜>"));
         assert!(!prompt.ends_with("<｜Assistant｜>"));
+    }
+
+    #[test]
+    fn test_chat_template_format_phi() {
+        let messages = vec![
+            ChatMessage::system("You are helpful."),
+            ChatMessage::user("Hello"),
+        ];
+        let prompt = ChatTemplate::Phi.format(&messages, true).unwrap();
+        assert!(prompt.contains("<|system|>\nYou are helpful.<|end|>"));
+        assert!(prompt.contains("<|user|>\nHello<|end|>"));
+        assert!(prompt.ends_with("<|assistant|>\n"));
+    }
+
+    #[test]
+    fn test_chat_template_format_gemma() {
+        let messages = vec![
+            ChatMessage::system("You are helpful."),
+            ChatMessage::user("Hello"),
+        ];
+        let prompt = ChatTemplate::Gemma.format(&messages, true).unwrap();
+        assert!(prompt.contains("<start_of_turn>user\nYou are helpful.\n\nHello<end_of_turn>"));
+        assert!(prompt.ends_with("<start_of_turn>model\n"));
+    }
+
+    #[test]
+    fn test_chat_template_format_gemma_no_system() {
+        let messages = vec![
+            ChatMessage::user("Hello"),
+            ChatMessage::assistant("Hi!"),
+        ];
+        let prompt = ChatTemplate::Gemma.format(&messages, false).unwrap();
+        assert!(prompt.contains("<start_of_turn>user\nHello<end_of_turn>"));
+        assert!(prompt.contains("<start_of_turn>model\nHi!<end_of_turn>"));
+    }
+
+    #[test]
+    fn test_chat_template_format_command_r() {
+        let messages = vec![
+            ChatMessage::system("You are helpful."),
+            ChatMessage::user("Hello"),
+        ];
+        let prompt = ChatTemplate::CommandR.format(&messages, true).unwrap();
+        assert!(prompt.contains("<|START_OF_TURN_TOKEN|><|SYSTEM_TOKEN|>You are helpful.<|END_OF_TURN_TOKEN|>"));
+        assert!(prompt.contains("<|START_OF_TURN_TOKEN|><|USER_TOKEN|>Hello<|END_OF_TURN_TOKEN|>"));
+        assert!(prompt.ends_with("<|START_OF_TURN_TOKEN|><|CHATBOT_TOKEN|>"));
     }
 
     #[test]
@@ -977,6 +1026,30 @@ mod tests {
     #[test]
     fn snapshot_chat_template_auto_fallback() {
         let prompt = ChatTemplate::Auto
+            .format(&chat_template_fixture_messages(), true)
+            .unwrap();
+        assert_snapshot!(prompt);
+    }
+
+    #[test]
+    fn snapshot_chat_template_phi() {
+        let prompt = ChatTemplate::Phi
+            .format(&chat_template_fixture_messages(), true)
+            .unwrap();
+        assert_snapshot!(prompt);
+    }
+
+    #[test]
+    fn snapshot_chat_template_gemma() {
+        let prompt = ChatTemplate::Gemma
+            .format(&chat_template_fixture_messages(), true)
+            .unwrap();
+        assert_snapshot!(prompt);
+    }
+
+    #[test]
+    fn snapshot_chat_template_command_r() {
+        let prompt = ChatTemplate::CommandR
             .format(&chat_template_fixture_messages(), true)
             .unwrap();
         assert_snapshot!(prompt);

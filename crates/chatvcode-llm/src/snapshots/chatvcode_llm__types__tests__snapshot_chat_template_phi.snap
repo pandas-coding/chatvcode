@@ -1,0 +1,12 @@
+---
+source: crates/chatvcode-llm/src/types.rs
+assertion_line: 1039
+expression: prompt
+---
+<|system|>
+You are a helpful coding assistant.<|end|>
+<|user|>
+What does the `main` function do?<|end|>
+<|assistant|>
+It prints a greeting.<|end|>
+<|assistant|>

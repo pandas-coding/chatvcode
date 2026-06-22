@@ -31,6 +31,18 @@ pub enum ChatTemplate {
     /// Format: `<｜begin▁of▁sentence｜>system\n\n<｜User｜>content<｜Assistant｜>`
     DeepSeek,
 
+    /// Phi-3 / Phi-4 format (Microsoft).
+    /// Format: `<|system|>\n{content}<|end|>\n<|user|>\n{content}<|end|>\n<|assistant|>\n`
+    Phi,
+
+    /// Gemma / Gemma 2 format (Google).
+    /// Format: `<start_of_turn>user\n{content}<end_of_turn>\n<start_of_turn>model\n{content}<end_of_turn>\n`
+    Gemma,
+
+    /// Command R / Command R+ format (Cohere).
+    /// Format: `<|START_OF_TURN_TOKEN|><|SYSTEM_TOKEN|>{content}<|END_OF_TURN_TOKEN|>`
+    CommandR,
+
     /// Custom jinja template string.
     Custom(String),
 }
@@ -45,6 +57,9 @@ impl ChatTemplate {
             Self::ChatML => Some("chatml"),
             Self::Llama3 => Some("llama3"),
             Self::DeepSeek => Some("deepseek"),
+            Self::Phi => Some("phi3"),
+            Self::Gemma => Some("gemma"),
+            Self::CommandR => Some("command-r"),
             Self::Custom(_) => None, // handled separately
         }
     }
@@ -95,6 +110,9 @@ impl ChatTemplate {
             Self::ChatML => Ok(Self::format_chatml(messages, add_generation_prompt)),
             Self::Llama3 => Ok(Self::format_llama3(messages, add_generation_prompt)),
             Self::DeepSeek => Ok(Self::format_deepseek(messages, add_generation_prompt)),
+            Self::Phi => Ok(Self::format_phi(messages, add_generation_prompt)),
+            Self::Gemma => Ok(Self::format_gemma(messages, add_generation_prompt)),
+            Self::CommandR => Ok(Self::format_command_r(messages, add_generation_prompt)),
             Self::Auto => {
                 // Auto falls back to ChatML — in production use, the model's
                 // own template (discovered via GGUF metadata) is preferred,
@@ -207,6 +225,117 @@ impl ChatTemplate {
 
         if add_generation_prompt {
             prompt.push_str("<｜Assistant｜>");
+        }
+
+        prompt
+    }
+
+    /// Format messages using Phi-3 / Phi-4 template (Microsoft).
+    ///
+    /// Phi format:
+    /// ```text
+    /// <|system|>
+    /// {content}<|end|>
+    /// <|user|>
+    /// {content}<|end|>
+    /// <|assistant|>
+    /// {content}<|end|>
+    /// ```
+    fn format_phi(messages: &[ChatMessage], add_generation_prompt: bool) -> String {
+        let mut prompt = String::new();
+
+        for msg in messages {
+            prompt.push_str("<|");
+            prompt.push_str(&msg.role);
+            prompt.push_str("|>\n");
+            prompt.push_str(&msg.content);
+            prompt.push_str("<|end|>\n");
+        }
+
+        if add_generation_prompt {
+            prompt.push_str("<|assistant|>\n");
+        }
+
+        prompt
+    }
+
+    /// Format messages using Gemma / Gemma 2 template (Google).
+    ///
+    /// Gemma format:
+    /// ```text
+    /// <start_of_turn>user
+    /// {content}<end_of_turn>
+    /// <start_of_turn>model
+    /// {content}<end_of_turn>
+    /// <start_of_turn>model
+    /// ```
+    ///
+    /// Note: Gemma does not have a dedicated system role; system messages
+    /// are prepended to the first user message.
+    fn format_gemma(messages: &[ChatMessage], add_generation_prompt: bool) -> String {
+        let mut prompt = String::new();
+        let mut system_content: Option<&str> = None;
+
+        for msg in messages {
+            match msg.role.as_str() {
+                "system" => {
+                    system_content = Some(&msg.content);
+                }
+                "user" => {
+                    prompt.push_str("<start_of_turn>user\n");
+                    if let Some(sys) = system_content.take() {
+                        prompt.push_str(sys);
+                        prompt.push_str("\n\n");
+                    }
+                    prompt.push_str(&msg.content);
+                    prompt.push_str("<end_of_turn>\n");
+                }
+                _ => {
+                    prompt.push_str("<start_of_turn>model\n");
+                    prompt.push_str(&msg.content);
+                    prompt.push_str("<end_of_turn>\n");
+                }
+            }
+        }
+
+        if add_generation_prompt {
+            prompt.push_str("<start_of_turn>model\n");
+        }
+
+        prompt
+    }
+
+    /// Format messages using Command R / Command R+ template (Cohere).
+    ///
+    /// Command R format:
+    /// ```text
+    /// <|START_OF_TURN_TOKEN|><|SYSTEM_TOKEN|>{content}<|END_OF_TURN_TOKEN|>
+    /// <|START_OF_TURN_TOKEN|><|USER_TOKEN|>{content}<|END_OF_TURN_TOKEN|>
+    /// <|START_OF_TURN_TOKEN|><|CHATBOT_TOKEN|>{content}<|END_OF_TURN_TOKEN|>
+    /// <|START_OF_TURN_TOKEN|><|CHATBOT_TOKEN|>
+    /// ```
+    fn format_command_r(messages: &[ChatMessage], add_generation_prompt: bool) -> String {
+        let mut prompt = String::new();
+
+        for msg in messages {
+            prompt.push_str("<|START_OF_TURN_TOKEN|>");
+            match msg.role.as_str() {
+                "system" => {
+                    prompt.push_str("<|SYSTEM_TOKEN|>");
+                }
+                "user" => {
+                    prompt.push_str("<|USER_TOKEN|>");
+                }
+                _ => {
+                    prompt.push_str("<|CHATBOT_TOKEN|>");
+                }
+            }
+            prompt.push_str(&msg.content);
+            prompt.push_str("<|END_OF_TURN_TOKEN|>");
+        }
+
+        if add_generation_prompt {
+            prompt.push_str("<|START_OF_TURN_TOKEN|><|CHATBOT_TOKEN|>");
         }
 
         prompt

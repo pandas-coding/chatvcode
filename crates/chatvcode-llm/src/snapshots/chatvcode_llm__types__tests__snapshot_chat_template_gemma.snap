@@ -1,0 +1,12 @@
+---
+source: crates/chatvcode-llm/src/types.rs
+assertion_line: 1047
+expression: prompt
+---
+<start_of_turn>user
+You are a helpful coding assistant.
+
+What does the `main` function do?<end_of_turn>
+<start_of_turn>model
+It prints a greeting.<end_of_turn>
+<start_of_turn>model

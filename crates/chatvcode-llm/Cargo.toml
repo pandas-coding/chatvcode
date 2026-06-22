@@ -20,6 +20,8 @@ serde_json = { workspace = true }
 bitflags = "2"
 dirs = "6"
 num_cpus = "1"
+rusqlite = { version = "0.31", features = ["bundled"] }
+ureq = "2"
 
 [build-dependencies]
 cmake = "0.1"

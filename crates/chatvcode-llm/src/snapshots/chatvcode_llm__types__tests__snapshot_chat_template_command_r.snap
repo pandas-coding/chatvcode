@@ -1,0 +1,6 @@
+---
+source: crates/chatvcode-llm/src/types.rs
+assertion_line: 1055
+expression: prompt
+---
+<|START_OF_TURN_TOKEN|><|SYSTEM_TOKEN|>You are a helpful coding assistant.<|END_OF_TURN_TOKEN|><|START_OF_TURN_TOKEN|><|USER_TOKEN|>What does the `main` function do?<|END_OF_TURN_TOKEN|><|START_OF_TURN_TOKEN|><|CHATBOT_TOKEN|>It prints a greeting.<|END_OF_TURN_TOKEN|><|START_OF_TURN_TOKEN|><|CHATBOT_TOKEN|>

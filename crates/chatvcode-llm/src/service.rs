@@ -97,6 +97,35 @@ pub trait LlmService: Send + Sync {
         self.infer_stream(prompt, params, cancel_flag).map(|r| (r, 0))
     }
 
+    /// Run batch inference on multiple prompts.
+    ///
+    /// Processes each prompt sequentially (or in parallel if the backend
+    /// supports it) and returns a vector of responses. The default
+    /// implementation processes prompts sequentially using [`infer`].
+    ///
+    /// # Arguments
+    ///
+    /// * `prompts` — Slice of prompt strings to process.
+    /// * `params` — Generation parameters applied to all prompts.
+    /// * `cancel_flag` — Optional cancellation flag checked between prompts.
+    fn infer_batch(
+        &self,
+        prompts: &[&str],
+        params: &GenerationParams,
+        cancel_flag: Option<&AtomicBool>,
+    ) -> LlmResult<Vec<InferenceResponse>> {
+        let mut results = Vec::with_capacity(prompts.len());
+        for prompt in prompts {
+            if let Some(flag) = cancel_flag
+                && flag.load(std::sync::atomic::Ordering::Relaxed)
+            {
+                break;
+            }
+            results.push(self.infer(prompt, params, cancel_flag)?);
+        }
+        Ok(results)
+    }
+
     /// Return metadata about the currently loaded model.
     fn model_info(&self) -> LlmResult<ModelInfo>;
 }
@@ -1224,6 +1253,42 @@ mod tests {
         }
 
         assert!(token_count <= 2, "Should not exceed max_tokens");
+    }
+
+    #[test]
+    fn test_mock_service_infer_batch() {
+        let service = MockLlmService::new("Batch response");
+        let params = GenerationParams::default();
+        let prompts = vec!["prompt1", "prompt2", "prompt3"];
+
+        let results = service.infer_batch(&prompts, &params, None).unwrap();
+        assert_eq!(results.len(), 3);
+        for resp in &results {
+            assert_eq!(resp.text, "Batch response");
+        }
+    }
+
+    #[test]
+    fn test_mock_service_infer_batch_cancelled() {
+        let service = MockLlmService::new("Should not complete");
+        let params = GenerationParams::default();
+        let prompts = vec!["p1", "p2", "p3"];
+        let cancel = AtomicBool::new(true);
+
+        let results = service.infer_batch(&prompts, &params, Some(&cancel)).unwrap();
+        for resp in &results {
+            assert_eq!(resp.stop_reason, StopReason::Cancelled);
+        }
+    }
+
+    #[test]
+    fn test_mock_service_infer_batch_empty() {
+        let service = MockLlmService::new("test");
+        let params = GenerationParams::default();
+        let prompts: Vec<&str> = vec![];
+
+        let results = service.infer_batch(&prompts, &params, None).unwrap();
+        assert!(results.is_empty());
     }
 
     // --- LlamaEmbeddingService unit tests ---

@@ -23,7 +23,7 @@ ChatVCode is designed as a modular system to ensure high maintainability and per
 ## 🚀 Roadmap
 - [x] **M1: Core Engine** - Multi-threaded file system traverse and `tree-sitter` AST chunking integration.
 - [x] **M2: Semantic Search** - Local ONNX embedding integration and embedded Vector DB implementation.
-- [ ] **M3: Inference** - `llama.cpp` FFI implementation and streaming generation.
+- [x] **M3: Inference** - `llama.cpp` FFI implementation and streaming generation.
 - [ ] **M4: Agentic Brain** - Prompt-state machine for multi-step codebase reasoning.
 - [ ] **M5: LSP Server** - `tower-lsp` implementation to serve directly into VS Code.
 

@@ -11,3 +11,7 @@ pub mod loop_detector;
 pub mod prompt;
 pub mod agent_loop;
 pub mod service;
+
+pub use error::{AgentError, AgentResult};
+pub use service::AgentService;
+pub use types::*;

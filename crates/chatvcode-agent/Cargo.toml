@@ -1,0 +1,23 @@
+[package]
+name = "chatvcode-agent"
+version = "0.1.0"
+edition = "2024"
+description = "Agentic AI tool-use loop and session management"
+
+[dependencies]
+chatvcode-core = { path = "../chatvcode-core" }
+chatvcode-llm = { path = "../chatvcode-llm" }
+chatvcode-parser = { path = "../chatvcode-parser" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+log = { workspace = true }
+regex = "1"
+walkdir = "2"
+thiserror = "2"
+
+[dev-dependencies]
+tempfile = "3"
+insta = { workspace = true }
+
+[lints]
+workspace = true

@@ -12,7 +12,7 @@ pub mod prompt;
 pub mod agent_loop;
 pub mod service;
 
-pub use budget::{SimpleTokenEstimator, TokenEstimator};
+pub use budget::{BudgetReport, SessionContext, SimpleTokenEstimator, TokenBudgetManager, TokenEstimator};
 pub use error::{AgentError, AgentResult};
 pub use service::AgentService;
 pub use types::*;

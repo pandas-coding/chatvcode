@@ -2,13 +2,13 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use chatvcode_core::model::{ChunkMetadata, SearchOptions, SearchResult};
+use chatvcode_core::model::{ChunkMetadata, SearchResult};
 use chatvcode_core::ParseSource;
 
 use crate::error::AgentError;
 
 pub trait CodeSearchService: Send + Sync {
-    fn search(&self, query: &str, options: &SearchOptions) -> Result<Vec<SearchResult>, AgentError>;
+    fn search(&self, query: &str, top_k: usize) -> Result<Vec<SearchResult>, AgentError>;
 }
 
 pub trait ChunkMetadataStoreTrait: Send + Sync {
@@ -46,12 +46,23 @@ impl CoreSearchService {
 }
 
 impl CodeSearchService for CoreSearchService {
-    fn search(&self, query: &str, options: &SearchOptions) -> Result<Vec<SearchResult>, AgentError> {
+    fn search(&self, query: &str, top_k: usize) -> Result<Vec<SearchResult>, AgentError> {
+        let vector_store_path = self.project_path.join(".chatvcode").join("vectors.db");
+        let options = chatvcode_core::model::SearchOptions::new(
+            chatvcode_vdb::EmbeddingConfig::new(
+                self.project_path.join(".chatvcode").join("model"),
+                384,
+                512,
+            ),
+            vector_store_path,
+        )
+        .with_top_k(top_k);
+
         chatvcode_core::search_with_service(
             query,
             &self.project_path,
             self.parser.as_ref(),
-            options,
+            &options,
             self.embedding_service.as_ref(),
         )
         .map_err(|e| AgentError::ToolError {
@@ -198,7 +209,7 @@ mod tests {
     struct MockSearchService;
 
     impl CodeSearchService for MockSearchService {
-        fn search(&self, _query: &str, _options: &SearchOptions) -> Result<Vec<SearchResult>, AgentError> {
+        fn search(&self, _query: &str, _top_k: usize) -> Result<Vec<SearchResult>, AgentError> {
             Ok(vec![])
         }
     }

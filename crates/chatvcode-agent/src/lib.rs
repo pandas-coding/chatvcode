@@ -20,4 +20,8 @@ pub use context::{
 };
 pub use error::{AgentError, AgentResult};
 pub use service::AgentService;
+pub use tools::{
+    BuiltinTool, GrepCodeTool, GetFileStructureTool, ListFilesTool, ReadFileTool, SearchCodeTool,
+    SearchSymbolTool,
+};
 pub use types::*;

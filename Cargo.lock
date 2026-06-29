@@ -226,6 +226,7 @@ dependencies = [
  "chatvcode-vdb",
  "insta",
  "log",
+ "lru",
  "regex",
  "serde",
  "serde_json",

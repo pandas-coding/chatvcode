@@ -8,6 +8,7 @@ description = "Agentic AI tool-use loop and session management"
 chatvcode-core = { path = "../chatvcode-core" }
 chatvcode-llm = { path = "../chatvcode-llm" }
 chatvcode-parser = { path = "../chatvcode-parser" }
+chatvcode-vdb = { path = "../chatvcode-vdb" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 log = { workspace = true }

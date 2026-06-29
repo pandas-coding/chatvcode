@@ -223,6 +223,7 @@ dependencies = [
  "chatvcode-core",
  "chatvcode-llm",
  "chatvcode-parser",
+ "chatvcode-vdb",
  "insta",
  "log",
  "regex",

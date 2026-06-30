@@ -96,7 +96,7 @@ pub fn find_tool<'a>(
     tools.iter().find(|t| t.definition().name == name).map(|t| t.as_ref())
 }
 
-fn resolve_safe_path(project_path: &std::path::Path, file_path: &str) -> Result<std::path::PathBuf, AgentError> {
+pub(crate) fn resolve_safe_path(project_path: &std::path::Path, file_path: &str) -> Result<std::path::PathBuf, AgentError> {
     let target = if std::path::Path::new(file_path).is_absolute() {
         std::path::PathBuf::from(file_path)
     } else {

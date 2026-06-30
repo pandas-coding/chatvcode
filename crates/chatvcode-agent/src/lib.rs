@@ -24,4 +24,5 @@ pub use tools::{
     BuiltinTool, GrepCodeTool, GetFileStructureTool, ListFilesTool, ReadFileTool, SearchCodeTool,
     SearchSymbolTool,
 };
+pub use executor::{BuiltinToolRegistry, ToolExecutor};
 pub use types::*;

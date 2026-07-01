@@ -97,13 +97,18 @@ mod tests {
             project_path: PathBuf::from("/test"),
             timeout: Duration::from_secs(30),
             token_budget: 4096,
-            services: Arc::new(AgentServices {
-                search: Box::new(MockSearch),
-                parser: Box::new(|_: chatvcode_core::model::SourceFile| -> chatvcode_core::ChatVCodeResult<chatvcode_core::model::ParseResult> {
-                    unimplemented!()
-                }),
-                chunk_store: Box::new(ChunkMetadataStoreAdapter::new(store)),
-            }),
+            services: Arc::new(
+                AgentServices {
+                    search: Box::new(MockSearch),
+                    parser:
+                        Box::new(
+                            |_: chatvcode_core::model::SourceFile| -> chatvcode_core::ChatVCodeResult<
+                                chatvcode_core::model::ParseResult,
+                            > { unimplemented!() },
+                        ),
+                    chunk_store: Box::new(ChunkMetadataStoreAdapter::new(store)),
+                },
+            ),
         }
     }
 

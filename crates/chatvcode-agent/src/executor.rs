@@ -1,6 +1,6 @@
 use std::panic::AssertUnwindSafe;
-use std::sync::mpsc;
 use std::sync::Arc;
+use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
 
@@ -11,7 +11,7 @@ use crate::cache::ToolResultCache;
 use crate::context::ToolContext;
 use crate::error::AgentError;
 use crate::tools::{
-    self, BuiltinTool, GrepCodeTool, GetFileStructureTool, ListFilesTool, ReadFileTool,
+    self, BuiltinTool, GetFileStructureTool, GrepCodeTool, ListFilesTool, ReadFileTool,
     SearchCodeTool, SearchSymbolTool,
 };
 use crate::types::ToolRetryConfig;
@@ -32,11 +32,7 @@ pub struct BuiltinToolRegistry {
 
 impl BuiltinToolRegistry {
     pub fn new(retry_config: ToolRetryConfig) -> Self {
-        Self {
-            tools: Vec::new(),
-            cache: ToolResultCache::default(),
-            retry_config,
-        }
+        Self { tools: Vec::new(), cache: ToolResultCache::default(), retry_config }
     }
 
     pub fn register(&mut self, tool: Box<dyn BuiltinTool>) {
@@ -76,9 +72,7 @@ impl BuiltinToolRegistry {
         let tool_name = call.name.clone();
 
         let handle = thread::spawn(move || {
-            let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
-                tool.execute(&call, &ctx)
-            }));
+            let result = std::panic::catch_unwind(AssertUnwindSafe(|| tool.execute(&call, &ctx)));
             let _ = tx.send(result);
         });
 
@@ -89,17 +83,12 @@ impl BuiltinToolRegistry {
             }
             Ok(Err(_panic)) => {
                 let _ = handle.join();
-                Err(AgentError::Internal(format!(
-                    "Tool '{}' panicked during execution",
-                    tool_name
-                )))
+                Err(AgentError::Internal(format!("Tool '{}' panicked during execution", tool_name)))
             }
             Err(mpsc::RecvTimeoutError::Timeout) => Err(AgentError::Timeout(timeout.as_secs())),
             Err(mpsc::RecvTimeoutError::Disconnected) => {
                 let _ = handle.join();
-                Err(AgentError::Internal(
-                    "Tool execution thread disconnected".into(),
-                ))
+                Err(AgentError::Internal("Tool execution thread disconnected".into()))
             }
         }
     }
@@ -139,8 +128,7 @@ impl BuiltinToolRegistry {
                             self.retry_config.retry_on_timeout && attempt + 1 < max_attempts
                         }
                         AgentError::Internal(_) => {
-                            self.retry_config.retry_on_transient_error
-                                && attempt + 1 < max_attempts
+                            self.retry_config.retry_on_transient_error && attempt + 1 < max_attempts
                         }
                         _ => false,
                     };
@@ -182,10 +170,12 @@ fn ctx_clone(ctx: &ToolContext) -> ToolContext {
 
 impl ToolExecutor for BuiltinToolRegistry {
     fn execute(&self, call: &ToolCall, ctx: &ToolContext) -> Result<ToolResult, AgentError> {
-        let tool = self.find_tool(&call.name).ok_or_else(|| AgentError::ToolError {
-            tool_name: call.name.clone(),
-            message: format!("Unknown tool: {}", call.name),
-        })?;
+        let tool = self
+            .find_tool(&call.name)
+            .ok_or_else(|| AgentError::ToolError {
+                tool_name: call.name.clone(),
+                message: format!("Unknown tool: {}", call.name),
+            })?;
 
         if tool.is_cacheable() {
             let key = tool.cache_key(call);
@@ -295,29 +285,24 @@ mod tests {
     }
 
     fn make_test_ctx(project_path: PathBuf) -> ToolContext {
-        let services = Arc::new(AgentServices {
-            search: Box::new(MockSearchService),
-            parser: Box::new(
-                |_: chatvcode_core::model::SourceFile| -> chatvcode_core::ChatVCodeResult<
-                    chatvcode_core::model::ParseResult,
-                > { unimplemented!() },
-            ),
-            chunk_store: Box::new(MockChunkStore),
-        });
-        ToolContext {
-            project_path,
-            timeout: Duration::from_secs(5),
-            token_budget: 4096,
-            services,
-        }
+        let services =
+            Arc::new(
+                AgentServices {
+                    search: Box::new(MockSearchService),
+                    parser:
+                        Box::new(
+                            |_: chatvcode_core::model::SourceFile| -> chatvcode_core::ChatVCodeResult<
+                                chatvcode_core::model::ParseResult,
+                            > { unimplemented!() },
+                        ),
+                    chunk_store: Box::new(MockChunkStore),
+                },
+            );
+        ToolContext { project_path, timeout: Duration::from_secs(5), token_budget: 4096, services }
     }
 
     fn make_call(name: &str, args: HashMap<String, Value>) -> ToolCall {
-        ToolCall {
-            name: name.to_string(),
-            arguments: args,
-            id: None,
-        }
+        ToolCall { name: name.to_string(), arguments: args, id: None }
     }
 
     struct SuccessTool;
@@ -332,11 +317,7 @@ mod tests {
                 )
         }
 
-        fn execute(
-            &self,
-            call: &ToolCall,
-            _ctx: &ToolContext,
-        ) -> Result<ToolResult, AgentError> {
+        fn execute(&self, call: &ToolCall, _ctx: &ToolContext) -> Result<ToolResult, AgentError> {
             let input = call.get_string("input").unwrap_or("default");
             Ok(ToolResult::success(Value::String(format!("ok: {}", input))))
         }
@@ -348,11 +329,7 @@ mod tests {
             ToolDefinition::new("fail_tool").description("Always fails")
         }
 
-        fn execute(
-            &self,
-            _call: &ToolCall,
-            _ctx: &ToolContext,
-        ) -> Result<ToolResult, AgentError> {
+        fn execute(&self, _call: &ToolCall, _ctx: &ToolContext) -> Result<ToolResult, AgentError> {
             Err(AgentError::ToolError {
                 tool_name: "fail_tool".into(),
                 message: "intentional failure".into(),
@@ -366,11 +343,7 @@ mod tests {
             ToolDefinition::new("panic_tool").description("Always panics")
         }
 
-        fn execute(
-            &self,
-            _call: &ToolCall,
-            _ctx: &ToolContext,
-        ) -> Result<ToolResult, AgentError> {
+        fn execute(&self, _call: &ToolCall, _ctx: &ToolContext) -> Result<ToolResult, AgentError> {
             panic!("intentional panic");
         }
     }
@@ -381,11 +354,7 @@ mod tests {
             ToolDefinition::new("slow_tool").description("Takes a long time")
         }
 
-        fn execute(
-            &self,
-            _call: &ToolCall,
-            _ctx: &ToolContext,
-        ) -> Result<ToolResult, AgentError> {
+        fn execute(&self, _call: &ToolCall, _ctx: &ToolContext) -> Result<ToolResult, AgentError> {
             thread::sleep(Duration::from_secs(1));
             Ok(ToolResult::success(Value::String("done".into())))
         }
@@ -398,32 +367,21 @@ mod tests {
 
     impl TransientFailTool {
         fn new(fail_times: usize) -> Self {
-            Self {
-                call_count: std::sync::atomic::AtomicUsize::new(0),
-                fail_times,
-            }
+            Self { call_count: std::sync::atomic::AtomicUsize::new(0), fail_times }
         }
     }
 
     impl BuiltinTool for TransientFailTool {
         fn definition(&self) -> ToolDefinition {
-            ToolDefinition::new("transient_tool")
-                .description("Fails N times then succeeds")
+            ToolDefinition::new("transient_tool").description("Fails N times then succeeds")
         }
 
-        fn execute(
-            &self,
-            _call: &ToolCall,
-            _ctx: &ToolContext,
-        ) -> Result<ToolResult, AgentError> {
+        fn execute(&self, _call: &ToolCall, _ctx: &ToolContext) -> Result<ToolResult, AgentError> {
             let count = self
                 .call_count
                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             if count < self.fail_times {
-                Err(AgentError::Internal(format!(
-                    "transient error (attempt {})",
-                    count + 1
-                )))
+                Err(AgentError::Internal(format!("transient error (attempt {})", count + 1)))
             } else {
                 Ok(ToolResult::success(Value::String("recovered".into())))
             }
@@ -442,11 +400,7 @@ mod tests {
                 )
         }
 
-        fn execute(
-            &self,
-            call: &ToolCall,
-            _ctx: &ToolContext,
-        ) -> Result<ToolResult, AgentError> {
+        fn execute(&self, call: &ToolCall, _ctx: &ToolContext) -> Result<ToolResult, AgentError> {
             let path = call.get_string("path").unwrap_or("");
             Ok(ToolResult::success(Value::String(format!("read: {}", path))))
         }
@@ -524,10 +478,7 @@ mod tests {
         let ctx = make_test_ctx(tmp.path().to_path_buf());
 
         let mut args = HashMap::new();
-        args.insert(
-            "path".to_string(),
-            Value::String("../../../../etc/passwd".into()),
-        );
+        args.insert("path".to_string(), Value::String("../../../../etc/passwd".into()));
         let call = make_call("path_tool", args);
 
         let result = reg.execute(&call, &ctx);
@@ -729,10 +680,7 @@ mod tests {
             arguments: HashMap::new(),
             id: Some("call_123".into()),
         };
-        let err = Err(AgentError::ToolError {
-            tool_name: "test".into(),
-            message: "bad".into(),
-        });
+        let err = Err(AgentError::ToolError { tool_name: "test".into(), message: "bad".into() });
         let result = BuiltinToolRegistry::format_result(&call, &err);
         assert!(!result.success);
         assert_eq!(result.call_id.as_deref(), Some("call_123"));

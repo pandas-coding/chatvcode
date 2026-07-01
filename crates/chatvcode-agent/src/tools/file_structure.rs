@@ -38,14 +38,14 @@ impl BuiltinTool for GetFileStructureTool {
         })?;
 
         let source_file = SourceFile::new(&resolved, source_text);
-        let parse_result = ctx
-            .services
-            .parser
-            .parse(source_file)
-            .map_err(|e| AgentError::ToolError {
-                tool_name: "get_file_structure".into(),
-                message: format!("Failed to parse file '{}': {}", path, e),
-            })?;
+        let parse_result =
+            ctx.services
+                .parser
+                .parse(source_file)
+                .map_err(|e| AgentError::ToolError {
+                    tool_name: "get_file_structure".into(),
+                    message: format!("Failed to parse file '{}': {}", path, e),
+                })?;
 
         let chunks: Vec<Value> = parse_result
             .chunks
@@ -86,10 +86,10 @@ impl BuiltinTool for GetFileStructureTool {
 mod tests {
     use super::*;
     use crate::context::{AgentServices, ChunkMetadataStoreTrait, CodeSearchService};
+    use chatvcode_core::ChatVCodeResult;
     use chatvcode_core::model::{
         ChunkKind, ChunkMetadata, ChunkSpan, CodeChunk, ParseResult, SearchResult, SourceFile,
     };
-    use chatvcode_core::ChatVCodeResult;
     use std::path::PathBuf;
     use std::sync::Arc;
     use std::time::Duration;
@@ -104,8 +104,12 @@ mod tests {
 
     struct MockChunkStore;
     impl ChunkMetadataStoreTrait for MockChunkStore {
-        fn get_chunks_by_symbol(&self, _: &str, _: Option<&str>) -> Vec<ChunkMetadata> { vec![] }
-        fn get_chunk_by_id(&self, _: &str) -> Option<ChunkMetadata> { None }
+        fn get_chunks_by_symbol(&self, _: &str, _: Option<&str>) -> Vec<ChunkMetadata> {
+            vec![]
+        }
+        fn get_chunk_by_id(&self, _: &str) -> Option<ChunkMetadata> {
+            None
+        }
     }
 
     struct MockParser;

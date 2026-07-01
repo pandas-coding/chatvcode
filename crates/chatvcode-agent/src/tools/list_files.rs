@@ -44,10 +44,18 @@ impl BuiltinTool for ListFilesTool {
             return Ok(ToolResult::error(format!("Not a directory: {}", sub_path)));
         }
 
-        let canonical_project = ctx.project_path.canonicalize().unwrap_or_else(|_| ctx.project_path.clone());
-        let canonical_target = target_dir.canonicalize().unwrap_or_else(|_| target_dir.clone());
+        let canonical_project = ctx
+            .project_path
+            .canonicalize()
+            .unwrap_or_else(|_| ctx.project_path.clone());
+        let canonical_target = target_dir
+            .canonicalize()
+            .unwrap_or_else(|_| target_dir.clone());
         if !canonical_target.starts_with(&canonical_project) {
-            return Ok(ToolResult::error(format!("Path '{}' is outside the project directory", sub_path)));
+            return Ok(ToolResult::error(format!(
+                "Path '{}' is outside the project directory",
+                sub_path
+            )));
         }
 
         let mut walker = WalkDir::new(&target_dir).follow_links(true);
@@ -89,7 +97,10 @@ impl BuiltinTool for ListFilesTool {
         }
 
         files.sort_by(|a, b| {
-            a["path"].as_str().unwrap_or("").cmp(b["path"].as_str().unwrap_or(""))
+            a["path"]
+                .as_str()
+                .unwrap_or("")
+                .cmp(b["path"].as_str().unwrap_or(""))
         });
 
         let result = serde_json::json!({
@@ -167,8 +178,12 @@ mod tests {
 
     struct MockChunkStore;
     impl ChunkMetadataStoreTrait for MockChunkStore {
-        fn get_chunks_by_symbol(&self, _: &str, _: Option<&str>) -> Vec<ChunkMetadata> { vec![] }
-        fn get_chunk_by_id(&self, _: &str) -> Option<ChunkMetadata> { None }
+        fn get_chunks_by_symbol(&self, _: &str, _: Option<&str>) -> Vec<ChunkMetadata> {
+            vec![]
+        }
+        fn get_chunk_by_id(&self, _: &str) -> Option<ChunkMetadata> {
+            None
+        }
     }
 
     fn make_ctx(project_path: PathBuf) -> ToolContext {
@@ -176,13 +191,18 @@ mod tests {
             project_path,
             timeout: Duration::from_secs(30),
             token_budget: 4096,
-            services: Arc::new(AgentServices {
-                search: Box::new(MockSearch),
-                parser: Box::new(|_: chatvcode_core::model::SourceFile| -> chatvcode_core::ChatVCodeResult<chatvcode_core::model::ParseResult> {
-                    unimplemented!()
-                }),
-                chunk_store: Box::new(MockChunkStore),
-            }),
+            services: Arc::new(
+                AgentServices {
+                    search: Box::new(MockSearch),
+                    parser:
+                        Box::new(
+                            |_: chatvcode_core::model::SourceFile| -> chatvcode_core::ChatVCodeResult<
+                                chatvcode_core::model::ParseResult,
+                            > { unimplemented!() },
+                        ),
+                    chunk_store: Box::new(MockChunkStore),
+                },
+            ),
         }
     }
 

@@ -105,8 +105,12 @@ mod tests {
 
     struct MockChunkStore;
     impl ChunkMetadataStoreTrait for MockChunkStore {
-        fn get_chunks_by_symbol(&self, _: &str, _: Option<&str>) -> Vec<ChunkMetadata> { vec![] }
-        fn get_chunk_by_id(&self, _: &str) -> Option<ChunkMetadata> { None }
+        fn get_chunks_by_symbol(&self, _: &str, _: Option<&str>) -> Vec<ChunkMetadata> {
+            vec![]
+        }
+        fn get_chunk_by_id(&self, _: &str) -> Option<ChunkMetadata> {
+            None
+        }
     }
 
     fn make_ctx(project_path: PathBuf) -> ToolContext {
@@ -114,13 +118,18 @@ mod tests {
             project_path,
             timeout: Duration::from_secs(30),
             token_budget: 4096,
-            services: Arc::new(AgentServices {
-                search: Box::new(MockSearch),
-                parser: Box::new(|_: chatvcode_core::model::SourceFile| -> chatvcode_core::ChatVCodeResult<chatvcode_core::model::ParseResult> {
-                    unimplemented!()
-                }),
-                chunk_store: Box::new(MockChunkStore),
-            }),
+            services: Arc::new(
+                AgentServices {
+                    search: Box::new(MockSearch),
+                    parser:
+                        Box::new(
+                            |_: chatvcode_core::model::SourceFile| -> chatvcode_core::ChatVCodeResult<
+                                chatvcode_core::model::ParseResult,
+                            > { unimplemented!() },
+                        ),
+                    chunk_store: Box::new(MockChunkStore),
+                },
+            ),
         }
     }
 

@@ -51,10 +51,7 @@ pub struct TokenBudgetManager {
 
 impl TokenBudgetManager {
     pub fn new(config: TokenBudgetConfig) -> Self {
-        Self {
-            config,
-            estimator: Box::new(SimpleTokenEstimator::new()),
-        }
+        Self { config, estimator: Box::new(SimpleTokenEstimator::new()) }
     }
 
     pub fn with_estimator(config: TokenBudgetConfig, estimator: Box<dyn TokenEstimator>) -> Self {
@@ -184,10 +181,7 @@ mod tests {
             ChatMessage::assistant("Hello! How can I help?"),
         ];
         let tokens = est.estimate_messages(&msgs);
-        let expected: usize = msgs
-            .iter()
-            .map(|m| est.estimate_text(&m.content) + 4)
-            .sum();
+        let expected: usize = msgs.iter().map(|m| est.estimate_text(&m.content) + 4).sum();
         assert_eq!(tokens, expected);
     }
 
@@ -208,10 +202,7 @@ mod tests {
     }
 
     fn empty_session<'a>() -> SessionContext<'a> {
-        SessionContext {
-            system_prompt: "",
-            messages: &[],
-        }
+        SessionContext { system_prompt: "", messages: &[] }
     }
 
     #[test]
@@ -231,10 +222,7 @@ mod tests {
     fn used_tokens_with_system_prompt() {
         let mgr = TokenBudgetManager::new(default_config());
         let prompt = "You are a helpful assistant.";
-        let session = SessionContext {
-            system_prompt: prompt,
-            messages: &[],
-        };
+        let session = SessionContext { system_prompt: prompt, messages: &[] };
         let expected = SimpleTokenEstimator::new().estimate_text(prompt);
         assert_eq!(mgr.used_tokens(&session), expected);
     }
@@ -242,14 +230,8 @@ mod tests {
     #[test]
     fn used_tokens_with_messages() {
         let mgr = TokenBudgetManager::new(default_config());
-        let msgs = vec![
-            ChatMessage::user("hello"),
-            ChatMessage::assistant("world"),
-        ];
-        let session = SessionContext {
-            system_prompt: "sys",
-            messages: &msgs,
-        };
+        let msgs = vec![ChatMessage::user("hello"), ChatMessage::assistant("world")];
+        let session = SessionContext { system_prompt: "sys", messages: &msgs };
         let est = SimpleTokenEstimator::new();
         let expected = est.estimate_text("sys") + est.estimate_messages(&msgs);
         assert_eq!(mgr.used_tokens(&session), expected);
@@ -267,21 +249,15 @@ mod tests {
     fn remaining_tokens_with_usage() {
         let mgr = TokenBudgetManager::new(default_config());
         let prompt = "a".repeat(400); // 100 tokens
-        let session = SessionContext {
-            system_prompt: &prompt,
-            messages: &[],
-        };
+        let session = SessionContext { system_prompt: &prompt, messages: &[] };
         // total(1000) - used(100) - reserve(200) = 700
         assert_eq!(mgr.remaining_tokens(&session), 700);
     }
 
     #[test]
     fn remaining_tokens_saturates_at_zero() {
-        let config = TokenBudgetConfig {
-            total_budget: 100,
-            response_reserve: 200,
-            ..default_config()
-        };
+        let config =
+            TokenBudgetConfig { total_budget: 100, response_reserve: 200, ..default_config() };
         let mgr = TokenBudgetManager::new(config);
         let session = empty_session();
         assert_eq!(mgr.remaining_tokens(&session), 0);
@@ -338,25 +314,16 @@ mod tests {
 
     #[test]
     fn is_budget_low_true_when_near_limit() {
-        let config = TokenBudgetConfig {
-            total_budget: 500,
-            response_reserve: 200,
-            ..default_config()
-        };
+        let config =
+            TokenBudgetConfig { total_budget: 500, response_reserve: 200, ..default_config() };
         let mgr = TokenBudgetManager::new(config);
         let prompt = "a".repeat(400); // 100 tokens
-        let session = SessionContext {
-            system_prompt: &prompt,
-            messages: &[],
-        };
+        let session = SessionContext { system_prompt: &prompt, messages: &[] };
         // remaining = 500 - 100 - 200 = 200, not < 200 => not low
         assert!(!mgr.is_budget_low(&session));
 
         let prompt2 = "a".repeat(404); // 101 tokens
-        let session2 = SessionContext {
-            system_prompt: &prompt2,
-            messages: &[],
-        };
+        let session2 = SessionContext { system_prompt: &prompt2, messages: &[] };
         // remaining = 500 - 101 - 200 = 199, < 200 => low
         assert!(mgr.is_budget_low(&session2));
     }
@@ -379,10 +346,7 @@ mod tests {
         let mgr = TokenBudgetManager::new(default_config());
         let prompt = "a".repeat(400);
         let msgs = vec![ChatMessage::user("hello")];
-        let session = SessionContext {
-            system_prompt: &prompt,
-            messages: &msgs,
-        };
+        let session = SessionContext { system_prompt: &prompt, messages: &msgs };
         let report = mgr.budget_report(&session);
         assert_eq!(report.total, 1000);
         assert!(report.used > 0);
@@ -394,17 +358,11 @@ mod tests {
 
     #[test]
     fn budget_report_is_low() {
-        let config = TokenBudgetConfig {
-            total_budget: 300,
-            response_reserve: 200,
-            ..default_config()
-        };
+        let config =
+            TokenBudgetConfig { total_budget: 300, response_reserve: 200, ..default_config() };
         let mgr = TokenBudgetManager::new(config);
         let prompt = "a".repeat(400); // 100 tokens
-        let session = SessionContext {
-            system_prompt: &prompt,
-            messages: &[],
-        };
+        let session = SessionContext { system_prompt: &prompt, messages: &[] };
         // remaining = 300 - 100 - 200 = 0, < 200 => low
         let report = mgr.budget_report(&session);
         assert!(report.is_low);
@@ -419,7 +377,10 @@ mod tests {
                 text.len() / 2
             }
             fn estimate_messages(&self, messages: &[ChatMessage]) -> usize {
-                messages.iter().map(|m| self.estimate_text(&m.content)).sum()
+                messages
+                    .iter()
+                    .map(|m| self.estimate_text(&m.content))
+                    .sum()
             }
         }
 
@@ -450,10 +411,7 @@ mod tests {
             ChatMessage::user("What is Rust?"),
             ChatMessage::assistant("Rust is a systems programming language."),
         ];
-        let session = SessionContext {
-            system_prompt: prompt,
-            messages: &msgs,
-        };
+        let session = SessionContext { system_prompt: prompt, messages: &msgs };
 
         let report = mgr.budget_report(&session);
         assert_eq!(report.used, mgr.used_tokens(&session));
@@ -468,10 +426,7 @@ mod tests {
 
         let system = "You are a helpful assistant.";
         let turn1 = vec![ChatMessage::user("Hello")];
-        let session1 = SessionContext {
-            system_prompt: system,
-            messages: &turn1,
-        };
+        let session1 = SessionContext { system_prompt: system, messages: &turn1 };
         let used1 = mgr.used_tokens(&session1);
         let remaining1 = mgr.remaining_tokens(&session1);
         assert!(remaining1 > 0);
@@ -483,10 +438,7 @@ mod tests {
             ChatMessage::user("Tell me about machine learning"),
             ChatMessage::assistant("Machine learning is a subset of AI..."),
         ];
-        let session2 = SessionContext {
-            system_prompt: system,
-            messages: &turn2,
-        };
+        let session2 = SessionContext { system_prompt: system, messages: &turn2 };
         let used2 = mgr.used_tokens(&session2);
         let remaining2 = mgr.remaining_tokens(&session2);
         assert!(used2 > used1);
@@ -495,11 +447,8 @@ mod tests {
 
     #[test]
     fn can_add_message_exact_fit() {
-        let config = TokenBudgetConfig {
-            total_budget: 300,
-            response_reserve: 200,
-            ..default_config()
-        };
+        let config =
+            TokenBudgetConfig { total_budget: 300, response_reserve: 200, ..default_config() };
         let mgr = TokenBudgetManager::new(config);
         let session = empty_session();
         // remaining = 300 - 0 - 200 = 100 tokens
@@ -536,17 +485,11 @@ mod tests {
 
     #[test]
     fn budget_fully_exhausted() {
-        let config = TokenBudgetConfig {
-            total_budget: 200,
-            response_reserve: 200,
-            ..default_config()
-        };
+        let config =
+            TokenBudgetConfig { total_budget: 200, response_reserve: 200, ..default_config() };
         let mgr = TokenBudgetManager::new(config);
         let prompt = "a".repeat(400); // 100 tokens
-        let session = SessionContext {
-            system_prompt: &prompt,
-            messages: &[],
-        };
+        let session = SessionContext { system_prompt: &prompt, messages: &[] };
         // remaining = 200 - 100 - 200 = 0 (saturating)
         assert_eq!(mgr.remaining_tokens(&session), 0);
         assert!(mgr.is_budget_low(&session));
@@ -561,14 +504,8 @@ mod tests {
     fn used_tokens_system_plus_history() {
         let mgr = TokenBudgetManager::new(default_config());
         let system = "system prompt here";
-        let msgs = vec![
-            ChatMessage::user("question"),
-            ChatMessage::assistant("answer"),
-        ];
-        let session = SessionContext {
-            system_prompt: system,
-            messages: &msgs,
-        };
+        let msgs = vec![ChatMessage::user("question"), ChatMessage::assistant("answer")];
+        let session = SessionContext { system_prompt: system, messages: &msgs };
         let est = SimpleTokenEstimator::new();
         let expected_system = est.estimate_text(system);
         let expected_history = est.estimate_messages(&msgs);

@@ -18,10 +18,7 @@ pub struct ToolResultCache {
 impl ToolResultCache {
     pub fn new(ttl: Duration, max_size: usize) -> Self {
         let cap = NonZeroUsize::new(max_size.max(1)).unwrap();
-        Self {
-            cache: Mutex::new(LruCache::new(cap)),
-            ttl,
-        }
+        Self { cache: Mutex::new(LruCache::new(cap)), ttl }
     }
 
     pub fn get(&self, key: &str) -> Option<ToolResult> {

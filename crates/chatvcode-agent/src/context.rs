@@ -2,8 +2,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use chatvcode_core::model::{ChunkMetadata, SearchResult};
 use chatvcode_core::ParseSource;
+use chatvcode_core::model::{ChunkMetadata, SearchResult};
 
 use crate::error::AgentError;
 
@@ -182,13 +182,19 @@ mod tests {
     #[test]
     fn test_tool_context_arc_sharing() {
         let store = ChunkMetadataStore::new();
-        let services = Arc::new(AgentServices {
-            search: Box::new(MockSearchService),
-            parser: Box::new(|_: chatvcode_core::model::SourceFile| -> chatvcode_core::ChatVCodeResult<chatvcode_core::model::ParseResult> {
-                unimplemented!()
-            }),
-            chunk_store: Box::new(ChunkMetadataStoreAdapter::new(store)),
-        });
+        let services =
+            Arc::new(
+                AgentServices {
+                    search: Box::new(MockSearchService),
+                    parser:
+                        Box::new(
+                            |_: chatvcode_core::model::SourceFile| -> chatvcode_core::ChatVCodeResult<
+                                chatvcode_core::model::ParseResult,
+                            > { unimplemented!() },
+                        ),
+                    chunk_store: Box::new(ChunkMetadataStoreAdapter::new(store)),
+                },
+            );
 
         let ctx1 = ToolContext {
             project_path: PathBuf::from("/test"),

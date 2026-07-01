@@ -142,10 +142,7 @@ pub struct AgentPromptBuilder {
 impl AgentPromptBuilder {
     /// Create a new prompt builder backed by the given tool registry.
     pub fn new(tool_registry: Arc<dyn ToolExecutor>) -> Self {
-        Self {
-            system_prompt_template: AGENT_SYSTEM_PROMPT.to_string(),
-            tool_registry,
-        }
+        Self { system_prompt_template: AGENT_SYSTEM_PROMPT.to_string(), tool_registry }
     }
 
     /// Override the default system prompt template.
@@ -175,7 +172,8 @@ impl AgentPromptBuilder {
     /// The step's tool calls are paired with their results so that tool names
     /// are included in the formatted output.
     pub fn build_observing_prompt(&self, step: &AgentStep) -> String {
-        let tool_results = self.format_tool_results_with_calls(&step.tool_calls, &step.tool_results);
+        let tool_results =
+            self.format_tool_results_with_calls(&step.tool_calls, &step.tool_results);
         OBSERVING_PROMPT.replace("{tool_results}", &tool_results)
     }
 
@@ -317,9 +315,9 @@ fn truncate_preview(text: &str, max: usize) -> String {
 mod tests {
     use super::*;
     use crate::executor::{BuiltinToolRegistry, ToolExecutor};
-    use insta::assert_snapshot;
     use crate::types::{AgentState, ThinkingPhase, TokenUsage};
     use chatvcode_llm::ToolCall;
+    use insta::assert_snapshot;
     use serde_json::Value;
     use std::collections::HashMap;
     use std::sync::Arc;
@@ -331,11 +329,7 @@ mod tests {
     }
 
     fn make_call(name: &str, args: HashMap<String, Value>) -> ToolCall {
-        ToolCall {
-            name: name.to_string(),
-            arguments: args,
-            id: None,
-        }
+        ToolCall { name: name.to_string(), arguments: args, id: None }
     }
 
     fn make_step(
@@ -463,7 +457,9 @@ mod tests {
             1,
             vec![call],
             vec![result],
-            Some("A long observation that should be truncated because it exceeds the one hundred character preview limit easily."),
+            Some(
+                "A long observation that should be truncated because it exceeds the one hundred character preview limit easily.",
+            ),
         )];
         let summary = builder.build_exploration_summary(&steps);
         assert!(summary.contains("Step 1: search_code(query=\"auth\")"));
@@ -475,10 +471,12 @@ mod tests {
     fn templates_keep_placeholders_when_substituted() {
         let builder = AgentPromptBuilder::new(make_registry());
 
-        assert!(!builder.build_system_prompt().contains("{tool_descriptions}"));
+        assert!(
+            !builder
+                .build_system_prompt()
+                .contains("{tool_descriptions}")
+        );
         assert!(!builder.build_planning_prompt("q").contains("{query}"));
-        assert!(!builder
-            .build_error_recovery_prompt("e")
-            .contains("{error}"));
+        assert!(!builder.build_error_recovery_prompt("e").contains("{error}"));
     }
 }

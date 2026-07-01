@@ -87,21 +87,17 @@ impl BuiltinTool for SearchCodeTool {
 }
 
 fn truncate_snippet(text: &str, max_len: usize) -> String {
-    if text.len() <= max_len {
-        text.to_string()
-    } else {
-        format!("{}...", &text[..max_len])
-    }
+    if text.len() <= max_len { text.to_string() } else { format!("{}...", &text[..max_len]) }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::context::{AgentServices, ChunkMetadataStoreAdapter, CodeSearchService};
+    use chatvcode_core::model::FileLanguage;
     use chatvcode_core::model::{
         ChunkKind, ChunkMetadataStore, ChunkSpan, CodeChunk, SearchResult,
     };
-    use chatvcode_core::model::FileLanguage;
     use std::path::PathBuf;
     use std::sync::Arc;
     use std::time::Duration;
@@ -138,13 +134,18 @@ mod tests {
             project_path: PathBuf::from("/test"),
             timeout: Duration::from_secs(30),
             token_budget: 4096,
-            services: Arc::new(AgentServices {
-                search: Box::new(MockSearch { results }),
-                parser: Box::new(|_: chatvcode_core::model::SourceFile| -> chatvcode_core::ChatVCodeResult<chatvcode_core::model::ParseResult> {
-                    unimplemented!()
-                }),
-                chunk_store: Box::new(ChunkMetadataStoreAdapter::new(store)),
-            }),
+            services: Arc::new(
+                AgentServices {
+                    search: Box::new(MockSearch { results }),
+                    parser:
+                        Box::new(
+                            |_: chatvcode_core::model::SourceFile| -> chatvcode_core::ChatVCodeResult<
+                                chatvcode_core::model::ParseResult,
+                            > { unimplemented!() },
+                        ),
+                    chunk_store: Box::new(ChunkMetadataStoreAdapter::new(store)),
+                },
+            ),
         }
     }
 
@@ -184,10 +185,8 @@ mod tests {
 
     #[test]
     fn test_search_code_summarize() {
-        let results = vec![
-            make_search_result("c1", "foo", 0.9),
-            make_search_result("c2", "bar", 0.8),
-        ];
+        let results =
+            vec![make_search_result("c1", "foo", 0.9), make_search_result("c2", "bar", 0.8)];
         let ctx = make_ctx(results);
         let tool = SearchCodeTool;
         let mut args = std::collections::HashMap::new();

@@ -1,16 +1,16 @@
-mod read_file;
-mod list_files;
-mod grep_code;
 mod file_structure;
-mod search_symbol;
+mod grep_code;
+mod list_files;
+mod read_file;
 mod search_code;
+mod search_symbol;
 
-pub use read_file::ReadFileTool;
-pub use list_files::ListFilesTool;
-pub use grep_code::GrepCodeTool;
 pub use file_structure::GetFileStructureTool;
-pub use search_symbol::SearchSymbolTool;
+pub use grep_code::GrepCodeTool;
+pub use list_files::ListFilesTool;
+pub use read_file::ReadFileTool;
 pub use search_code::SearchCodeTool;
+pub use search_symbol::SearchSymbolTool;
 
 use chatvcode_llm::{ToolCall, ToolDefinition, ToolResult};
 use serde_json::Value;
@@ -21,11 +21,7 @@ use crate::error::AgentError;
 pub trait BuiltinTool: Send + Sync {
     fn definition(&self) -> ToolDefinition;
 
-    fn execute(
-        &self,
-        call: &ToolCall,
-        ctx: &ToolContext,
-    ) -> Result<ToolResult, AgentError>;
+    fn execute(&self, call: &ToolCall, ctx: &ToolContext) -> Result<ToolResult, AgentError>;
 
     fn validate_arguments(&self, call: &ToolCall) -> Result<(), AgentError> {
         let def = self.definition();
@@ -52,11 +48,7 @@ pub trait BuiltinTool: Send + Sync {
             Value::String(s) => s.clone(),
             other => other.to_string(),
         };
-        if text.len() > 500 {
-            format!("{}... (truncated)", &text[..500])
-        } else {
-            text
-        }
+        if text.len() > 500 { format!("{}... (truncated)", &text[..500]) } else { text }
     }
 
     fn is_cacheable(&self) -> bool {
@@ -89,20 +81,25 @@ pub fn build_tool_definitions(tools: &[Box<dyn BuiltinTool>]) -> Vec<ToolDefinit
     tools.iter().map(|t| t.definition()).collect()
 }
 
-pub fn find_tool<'a>(
-    tools: &'a [Box<dyn BuiltinTool>],
-    name: &str,
-) -> Option<&'a dyn BuiltinTool> {
-    tools.iter().find(|t| t.definition().name == name).map(|t| t.as_ref())
+pub fn find_tool<'a>(tools: &'a [Box<dyn BuiltinTool>], name: &str) -> Option<&'a dyn BuiltinTool> {
+    tools
+        .iter()
+        .find(|t| t.definition().name == name)
+        .map(|t| t.as_ref())
 }
 
-pub(crate) fn resolve_safe_path(project_path: &std::path::Path, file_path: &str) -> Result<std::path::PathBuf, AgentError> {
+pub(crate) fn resolve_safe_path(
+    project_path: &std::path::Path,
+    file_path: &str,
+) -> Result<std::path::PathBuf, AgentError> {
     let target = if std::path::Path::new(file_path).is_absolute() {
         std::path::PathBuf::from(file_path)
     } else {
         project_path.join(file_path)
     };
-    let canonical_project = project_path.canonicalize().unwrap_or_else(|_| project_path.to_path_buf());
+    let canonical_project = project_path
+        .canonicalize()
+        .unwrap_or_else(|_| project_path.to_path_buf());
     let canonical_target = target.canonicalize().unwrap_or_else(|_| {
         if let Some(parent) = target.parent() {
             if let Ok(cp) = parent.canonicalize() {
@@ -198,11 +195,7 @@ mod tests {
     #[test]
     fn test_validate_arguments_missing_required() {
         let tool = ReadFileTool;
-        let call = ToolCall {
-            name: "read_file".into(),
-            arguments: HashMap::new(),
-            id: None,
-        };
+        let call = ToolCall { name: "read_file".into(), arguments: HashMap::new(), id: None };
         assert!(tool.validate_arguments(&call).is_err());
     }
 
@@ -211,11 +204,7 @@ mod tests {
         let tool = ReadFileTool;
         let mut args = HashMap::new();
         args.insert("path".to_string(), Value::String("test.rs".into()));
-        let call = ToolCall {
-            name: "read_file".into(),
-            arguments: args,
-            id: None,
-        };
+        let call = ToolCall { name: "read_file".into(), arguments: args, id: None };
         assert!(tool.validate_arguments(&call).is_ok());
     }
 }

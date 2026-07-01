@@ -1,29 +1,32 @@
-pub mod types;
-pub mod error;
-pub mod context;
-pub mod session;
-pub mod metrics;
-pub mod budget;
-pub mod tools;
-pub mod executor;
-pub mod cache;
-pub mod state;
-pub mod loop_detector;
-pub mod prompt;
 pub mod agent_loop;
+pub mod budget;
+pub mod cache;
+pub mod context;
+pub mod error;
+pub mod executor;
+pub mod loop_detector;
+pub mod metrics;
+pub mod prompt;
 pub mod service;
+pub mod session;
+pub mod state;
+pub mod tools;
+pub mod types;
 
-pub use budget::{BudgetReport, SessionContext, SimpleTokenEstimator, TokenBudgetManager, TokenEstimator};
+pub use budget::{
+    BudgetReport, SessionContext, SimpleTokenEstimator, TokenBudgetManager, TokenEstimator,
+};
 pub use context::{
     AgentServices, ChunkMetadataStoreAdapter, ChunkMetadataStoreTrait, CodeSearchService,
     CoreSearchService, ToolContext,
 };
 pub use error::{AgentError, AgentResult};
+pub use executor::{BuiltinToolRegistry, ToolExecutor};
+pub use loop_detector::{LoopDetectionResult, LoopDetector};
+pub use prompt::AgentPromptBuilder;
 pub use service::AgentService;
 pub use tools::{
-    BuiltinTool, GrepCodeTool, GetFileStructureTool, ListFilesTool, ReadFileTool, SearchCodeTool,
+    BuiltinTool, GetFileStructureTool, GrepCodeTool, ListFilesTool, ReadFileTool, SearchCodeTool,
     SearchSymbolTool,
 };
-pub use executor::{BuiltinToolRegistry, ToolExecutor};
-pub use prompt::AgentPromptBuilder;
 pub use types::*;

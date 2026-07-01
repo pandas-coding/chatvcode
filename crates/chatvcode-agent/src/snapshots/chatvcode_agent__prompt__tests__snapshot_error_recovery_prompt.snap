@@ -1,0 +1,12 @@
+---
+source: crates/chatvcode-agent/src/prompt.rs
+assertion_line: 415
+expression: prompt
+---
+
+The previous tool call failed with error: Tool 'read_file' timed out
+
+Please try a different approach. Consider:
+- Using alternative tools
+- Adjusting your search parameters
+- Working with the information you already have

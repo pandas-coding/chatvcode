@@ -1,0 +1,17 @@
+---
+source: crates/chatvcode-agent/src/prompt.rs
+assertion_line: 408
+expression: prompt
+---
+
+You have gathered information through your exploration. Here's a summary:
+
+Step 1: search_code(query="auth")
+  Observation: Located the authentication module.
+
+Please synthesize your findings and provide a comprehensive final answer.
+
+Remember to:
+- Include specific file paths and line numbers
+- Explain the key concepts clearly
+- Note any limitations or caveats

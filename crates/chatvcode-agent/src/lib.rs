@@ -25,4 +25,5 @@ pub use tools::{
     SearchSymbolTool,
 };
 pub use executor::{BuiltinToolRegistry, ToolExecutor};
+pub use prompt::AgentPromptBuilder;
 pub use types::*;

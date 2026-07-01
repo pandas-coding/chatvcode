@@ -1,0 +1,16 @@
+---
+source: crates/chatvcode-agent/src/prompt.rs
+assertion_line: 379
+expression: prompt
+---
+
+The user has asked: "How is authentication implemented?"
+
+Please analyze this question and decide how to explore the codebase. Consider:
+1. What specific information do you need?
+2. Which tools would be most helpful?
+3. What's the most efficient exploration path?
+
+You can either:
+- Call tools to gather information
+- Answer directly if you already have enough context from the codebase

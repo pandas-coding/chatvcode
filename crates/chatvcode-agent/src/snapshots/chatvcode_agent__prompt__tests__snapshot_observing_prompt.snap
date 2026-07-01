@@ -1,0 +1,19 @@
+---
+source: crates/chatvcode-agent/src/prompt.rs
+assertion_line: 391
+expression: prompt
+---
+
+Here are the results from your tool calls:
+
+[Tool 1] read_file
+Result:
+"fn validate_token() {}"
+---
+
+Based on these results:
+- Do you have enough information to answer the question?
+- If not, what additional information do you need?
+- Which tools should you use next?
+
+Proceed with more tool calls if needed, or provide your final answer.

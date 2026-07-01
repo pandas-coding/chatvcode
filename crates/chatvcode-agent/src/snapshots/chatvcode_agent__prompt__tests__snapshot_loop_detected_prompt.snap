@@ -1,0 +1,13 @@
+---
+source: crates/chatvcode-agent/src/prompt.rs
+assertion_line: 430
+expression: prompt
+---
+
+I notice you've been using similar tool calls repeatedly. Please either:
+- Try a completely different approach
+- Provide a final answer with the information gathered so far
+
+Current exploration summary:
+Step 1: search_code(query="auth")
+Step 2: search_code(query="auth")

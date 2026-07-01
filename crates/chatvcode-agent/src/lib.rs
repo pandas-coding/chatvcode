@@ -25,6 +25,7 @@ pub use executor::{BuiltinToolRegistry, ToolExecutor};
 pub use loop_detector::{LoopDetectionResult, LoopDetector};
 pub use prompt::AgentPromptBuilder;
 pub use service::AgentService;
+pub use state::{AgentStateMachine, TransitionEvent};
 pub use tools::{
     BuiltinTool, GetFileStructureTool, GrepCodeTool, ListFilesTool, ReadFileTool, SearchCodeTool,
     SearchSymbolTool,

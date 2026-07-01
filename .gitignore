@@ -35,3 +35,5 @@ third_party/llama.cpp/build-*/
 
 ## chatvcode runtime folder
 **/.chatvcode/
+
+**/Agents.md
